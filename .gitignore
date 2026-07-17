@@ -1,0 +1,38 @@
+﻿node_modules/
+dist/
+.dist/
+review_assets/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+*.log
+.DS_Store
+
+# Reference materials kept local unless explicitly requested
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Homepage character images must be tracked for GitHub Pages deploy
+!site/assets/characters/*.png
+!site/assets/characters/*.jpg
+
+# 3D 模型与音频 — 生产环境走 Cloudflare R2，不纳入 Git
+public/models/**/*.glb
+public/audio/**/*.wav
+public/audio/**/*.mp3
+
+# Blender 源文件与原始 PBR 贴图 — 仅本地使用，游戏运行时不需要
+3D_Assets/
+
+.log
+
+/ppt
+
+/reference
+
+/design
+
+/tmp
