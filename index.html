@@ -1,213 +1,1328 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>浙大夜惊魂 · THE HAUNTING OF ZJU｜校园悬疑侦探系列</title>
-<meta name="description" content="国内首部高校实景恐怖小说改编 · 2.5D 校园悬疑探索游戏。以浙江大学紫金港校区为舞台，风水堪舆、七大学园、求是会……深夜降临，谁在敲你的窗？" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;900&family=ZCOOL+XiaoWei&family=Cinzel:wght@500;700;900&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="./site/styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>城市生存模拟器</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel: rgba(13, 17, 23, 0.62);
+      --line: rgba(255, 255, 255, 0.16);
+      --text: #eef3f7;
+      --muted: #9aa8b4;
+      --accent: #4fd1c5;
+      --danger: #ff8a65;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #8fa7b5;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+    }
+
+    #app {
+      position: fixed;
+      inset: 0;
+      background: #8fa7b5;
+    }
+
+    .boot-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 90;
+      display: grid;
+      place-items: center;
+      background: #8fa7b5;
+      color: #16272b;
+      transition: opacity 180ms ease, visibility 180ms ease;
+    }
+
+    .boot-screen.is-ready {
+      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .boot-status {
+      width: min(280px, calc(100vw - 48px));
+      text-align: center;
+    }
+
+    .boot-status strong {
+      display: block;
+      font-size: 16px;
+    }
+
+    .boot-track {
+      height: 4px;
+      margin-top: 12px;
+      overflow: hidden;
+      background: rgba(22, 39, 43, 0.2);
+    }
+
+    .boot-track::after {
+      content: "";
+      display: block;
+      width: 42%;
+      height: 100%;
+      background: #167d72;
+      animation: boot-progress 900ms ease-in-out infinite alternate;
+    }
+
+    @keyframes boot-progress {
+      from { translate: -20% 0; }
+      to { translate: 158% 0; }
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .topbar {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand,
+    .readout,
+    .actions {
+      pointer-events: auto;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+    }
+
+    .brand {
+      min-width: 178px;
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .readout {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(72px, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border-radius: 8px;
+    }
+
+    .metric {
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.035);
+      text-align: center;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 8px;
+    }
+
+    button {
+      height: 36px;
+      border: 0;
+      border-radius: 7px;
+      padding: 0 12px;
+      color: #06201e;
+      background: var(--accent);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .crosshair {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 22px;
+      height: 22px;
+      translate: -50% -50%;
+      opacity: 0.86;
+    }
+
+    .crosshair::before,
+    .crosshair::after {
+      content: "";
+      position: absolute;
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: 0 0 14px rgba(79, 209, 197, 0.6);
+    }
+
+    .crosshair::before {
+      left: 10px;
+      top: 2px;
+      width: 2px;
+      height: 18px;
+    }
+
+    .crosshair::after {
+      left: 2px;
+      top: 10px;
+      width: 18px;
+      height: 2px;
+    }
+
+    .hand-shadow {
+      position: fixed;
+      left: 50%;
+      bottom: 0;
+      width: min(90vw, 960px);
+      height: min(28vh, 240px);
+      translate: -50% 0;
+      pointer-events: none;
+      background: radial-gradient(ellipse at center bottom, rgba(0, 0, 0, 0.46), transparent 64%);
+    }
+
+    .notice {
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      max-width: min(420px, calc(100vw - 36px));
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      font-size: 12px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+
+    .interaction-prompt {
+      position: absolute;
+      left: 50%;
+      bottom: 72px;
+      width: min(320px, calc(100vw - 36px));
+      translate: -50% 0;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      text-align: center;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+
+    .interaction-prompt.active {
+      opacity: 1;
+    }
+
+    .interaction-progress {
+      height: 3px;
+      margin-top: 7px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .interaction-progress span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: var(--accent);
+    }
+
+    .loot-panel {
+      position: absolute;
+      right: 18px;
+      top: 86px;
+      width: min(340px, calc(100vw - 36px));
+      max-height: calc(100vh - 180px);
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(12, 17, 20, 0.94);
+      pointer-events: auto;
+    }
+
+    .loot-panel[hidden] {
+      display: none;
+    }
+
+    .loot-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .loot-panel h2 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .loot-close {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #e7ecee;
+      font-size: 20px;
+      line-height: 1;
+      place-items: center;
+      cursor: pointer;
+    }
+
+    .loot-close:hover,
+    .loot-close:focus-visible {
+      border-color: var(--accent);
+      background: rgba(79, 209, 197, 0.14);
+      outline: none;
+    }
+
+    .loot-panel p {
+      margin: 5px 0 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .loot-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .loot-item {
+      display: grid;
+      grid-template-columns: 38px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      min-height: 42px;
+      padding: 6px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .loot-item:hover {
+      border-color: var(--accent);
+      background: rgba(79, 209, 197, 0.1);
+    }
+
+    .loot-visual {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 5px;
+      background: #20272a;
+      box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.24);
+    }
+
+    .loot-visual::before,
+    .loot-visual::after {
+      position: absolute;
+      display: block;
+      box-sizing: border-box;
+      content: '';
+    }
+
+    .item-water::before,
+    .item-drink::before {
+      left: 10px;
+      top: 7px;
+      width: 14px;
+      height: 23px;
+      border: 1px solid #b9dce7;
+      border-radius: 4px 4px 6px 6px;
+      background: linear-gradient(to bottom, transparent 38%, #4a9cbc 39% 78%, #78bed4 79%);
+    }
+
+    .item-water::after,
+    .item-drink::after {
+      left: 13px;
+      top: 4px;
+      width: 8px;
+      height: 5px;
+      border-radius: 2px 2px 0 0;
+      background: #d7e7eb;
+    }
+
+    .item-drink::before {
+      border-color: #bce1c2;
+      background: linear-gradient(to bottom, transparent 30%, #e7e9e1 31% 43%, #4c9c61 44% 79%, #7abe89 80%);
+      clip-path: polygon(22% 0, 78% 0, 100% 20%, 92% 100%, 8% 100%, 0 20%);
+    }
+
+    .item-drink::after {
+      background: #e8f0e7;
+    }
+
+    .item-can::before {
+      left: 8px;
+      top: 6px;
+      width: 18px;
+      height: 24px;
+      border: 1px solid #cbd0cd;
+      border-radius: 5px;
+      background: linear-gradient(to right, #8f9898, #e0e3df 26%, #b4bdbc 72%, #7c8586);
+      box-shadow: inset 0 3px #dfe3df, inset 0 -3px #777f80;
+    }
+
+    .item-can::after {
+      left: 10px;
+      top: 13px;
+      width: 14px;
+      height: 9px;
+      border: 1px solid #ce6851;
+      background: #9f3f32;
+    }
+
+    .item-bandage::before,
+    .item-bandage::after {
+      left: 4px;
+      top: 13px;
+      width: 26px;
+      height: 9px;
+      border: 1px solid #b99e78;
+      border-radius: 5px;
+      background: radial-gradient(circle, #8f7353 1px, transparent 1.5px) 0 0 / 5px 5px, #dec69c;
+      transform: rotate(-26deg);
+    }
+
+    .item-bandage::after {
+      transform: rotate(64deg);
+    }
+
+    .item-battery::before {
+      left: 6px;
+      top: 9px;
+      width: 23px;
+      height: 16px;
+      border: 1px solid #d9cd72;
+      border-radius: 3px;
+      background: linear-gradient(to right, #1c2022 0 28%, #c7b63b 29% 77%, #dfd05c 78%);
+    }
+
+    .item-battery::after {
+      right: 3px;
+      top: 13px;
+      width: 4px;
+      height: 8px;
+      border-radius: 0 2px 2px 0;
+      background: #aeb4af;
+    }
+
+    .item-flashlight::before {
+      left: 4px;
+      top: 13px;
+      width: 22px;
+      height: 9px;
+      border: 1px solid #8d979a;
+      border-radius: 3px;
+      background: repeating-linear-gradient(90deg, #3f484c 0 4px, #596469 4px 6px);
+      transform: rotate(-8deg);
+    }
+
+    .item-flashlight::after {
+      right: 3px;
+      top: 9px;
+      width: 10px;
+      height: 17px;
+      border: 1px solid #9ea7a9;
+      background: linear-gradient(to right, #3f494d, #e7d77f);
+      clip-path: polygon(0 25%, 100% 0, 100% 100%, 0 75%);
+      transform: rotate(-8deg);
+    }
+
+    .item-medkit::before {
+      left: 5px;
+      top: 10px;
+      width: 24px;
+      height: 20px;
+      border: 1px solid #e28682;
+      border-radius: 3px;
+      background: linear-gradient(#fff 0 0) center / 5px 13px no-repeat,
+        linear-gradient(#fff 0 0) center / 13px 5px no-repeat, #a9433e;
+    }
+
+    .item-medkit::after {
+      left: 11px;
+      top: 5px;
+      width: 12px;
+      height: 7px;
+      border: 2px solid #a9433e;
+      border-bottom: 0;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .item-biscuit::before {
+      left: 5px;
+      top: 6px;
+      width: 24px;
+      height: 23px;
+      border: 1px solid #d8b477;
+      border-radius: 3px;
+      background: radial-gradient(circle at 8px 8px, #6f512d 1px, transparent 1.5px),
+        radial-gradient(circle at 16px 15px, #6f512d 1px, transparent 1.5px),
+        radial-gradient(circle at 8px 17px, #6f512d 1px, transparent 1.5px), #bd8e4f;
+      box-shadow: inset 0 0 0 3px #96703e;
+    }
+
+    .item-biscuit::after {
+      left: 8px;
+      top: 9px;
+      width: 18px;
+      height: 17px;
+      border: 1px dashed rgba(255, 244, 210, 0.58);
+    }
+
+    .item-radio::before {
+      left: 5px;
+      top: 9px;
+      width: 25px;
+      height: 21px;
+      border: 1px solid #899294;
+      border-radius: 3px;
+      background: radial-gradient(circle at 17px 13px, #171b1d 0 5px, #6d777a 5.5px 7px, transparent 7.5px),
+        linear-gradient(#a6b069 0 0) 4px 5px / 7px 4px no-repeat, #414a4e;
+    }
+
+    .item-radio::after {
+      left: 8px;
+      top: 1px;
+      width: 2px;
+      height: 12px;
+      background: #aab0ae;
+      transform: rotate(-16deg);
+      transform-origin: bottom;
+    }
+
+    .item-matches::before {
+      left: 6px;
+      top: 8px;
+      width: 22px;
+      height: 20px;
+      border: 1px solid #bd8c55;
+      border-radius: 2px;
+      background: linear-gradient(to bottom, #d6b06f 0 27%, #a44432 28% 70%, #d6b06f 71%);
+    }
+
+    .item-matches::after {
+      left: 16px;
+      top: 4px;
+      width: 3px;
+      height: 25px;
+      border-radius: 3px;
+      background: linear-gradient(to bottom, #bb4938 0 5px, #dfc28b 6px);
+      transform: rotate(35deg);
+    }
+
+    .item-rope::before {
+      left: 6px;
+      top: 6px;
+      width: 22px;
+      height: 22px;
+      border: 4px solid #b58a51;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 3px #20272a, 0 0 0 1px #d1a76b;
+    }
+
+    .item-rope::after {
+      left: 18px;
+      top: 19px;
+      width: 11px;
+      height: 4px;
+      border-radius: 3px;
+      background: #c49a60;
+      transform: rotate(45deg);
+    }
+
+    .item-knife::before {
+      left: 5px;
+      top: 8px;
+      width: 21px;
+      height: 11px;
+      border: 1px solid #d1d6d5;
+      background: linear-gradient(160deg, #eef0ed, #7e898c);
+      clip-path: polygon(0 40%, 100% 0, 82% 100%, 0 73%);
+      transform: rotate(-27deg);
+    }
+
+    .item-knife::after {
+      right: 3px;
+      bottom: 5px;
+      width: 15px;
+      height: 7px;
+      border: 1px solid #75523a;
+      border-radius: 2px 4px 4px 2px;
+      background: repeating-linear-gradient(90deg, #4f3528 0 3px, #75513a 3px 5px);
+      transform: rotate(-27deg);
+    }
+
+    .loot-item strong,
+    .loot-item span {
+      font-size: 12px;
+    }
+
+    .loot-item > span:last-child {
+      color: var(--muted);
+    }
+
+    .elevator-panel {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(320px, calc(100vw - 36px));
+      translate: -50% -50%;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(10, 14, 16, 0.97);
+      pointer-events: auto;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .elevator-panel[hidden] {
+      display: none;
+    }
+
+    .elevator-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .elevator-display {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      height: 64px;
+      margin-bottom: 12px;
+      border: 1px solid #31383b;
+      background: #070909;
+      color: #ff685f;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 34px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .elevator-direction {
+      min-width: 28px;
+      font-size: 22px;
+    }
+
+    .elevator-buttons {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .elevator-buttons button {
+      min-width: 0;
+      color: var(--text);
+      background: #313a3d;
+      border: 1px solid #505c60;
+    }
+
+    .elevator-buttons button:hover {
+      border-color: var(--accent);
+      background: #3b494b;
+    }
+
+    .elevator-close {
+      width: 34px;
+      padding: 0;
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+
+    .wanted-indicator {
+      position: absolute;
+      right: 18px;
+      top: 86px;
+      min-width: 176px;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(18, 19, 21, 0.78);
+      color: #ff786f;
+      font-size: 13px;
+      font-weight: 800;
+      text-align: center;
+      pointer-events: none;
+      backdrop-filter: blur(12px);
+    }
+
+    .trade-panel {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(520px, calc(100vw - 36px));
+      max-height: min(620px, calc(100vh - 70px));
+      translate: -50% -50%;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(10, 14, 16, 0.98);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.56);
+      pointer-events: auto;
+    }
+
+    .trade-panel[hidden] {
+      display: none;
+    }
+
+    .trade-head,
+    .trade-balance {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .trade-balance {
+      padding-block: 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .trade-balance strong {
+      color: #7ef0ad;
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .trade-close {
+      width: 34px;
+      padding: 0;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      font-size: 20px;
+    }
+
+    .trade-list {
+      display: grid;
+      gap: 1px;
+      max-height: min(470px, calc(100vh - 210px));
+      overflow: auto;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .trade-row {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 58px;
+      padding: 8px 12px;
+      background: #151b1e;
+    }
+
+    .trade-icon {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 5px;
+      background: #283136;
+      color: #dff8ea;
+      font-size: 18px;
+      place-items: center;
+    }
+
+    .trade-copy {
+      min-width: 0;
+    }
+
+    .trade-copy strong,
+    .trade-copy span {
+      display: block;
+    }
+
+    .trade-copy strong {
+      overflow-wrap: anywhere;
+      font-size: 13px;
+    }
+
+    .trade-copy span {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .trade-row button {
+      min-width: 84px;
+    }
+
+    .trade-row button:disabled {
+      cursor: not-allowed;
+      filter: grayscale(0.75);
+      opacity: 0.48;
+    }
+
+    .computer-income-status {
+      color: #c9ffdc;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .sleep-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      background: #020304;
+      color: #d8e0e3;
+      pointer-events: none;
+      transition: opacity 180ms linear;
+    }
+
+    .sleep-overlay[hidden] {
+      display: none;
+    }
+
+    .sleep-overlay strong {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .map-panel {
+      position: fixed;
+      left: 18px;
+      top: 86px;
+      z-index: 14;
+      width: 220px;
+      height: 160px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(11, 17, 18, 0.9);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+      pointer-events: none;
+      transition: width 160ms ease, height 160ms ease;
+    }
+
+    .map-panel.expanded {
+      width: min(560px, calc(100vw - 36px));
+      height: min(430px, calc(100vh - 116px));
+      pointer-events: auto;
+    }
+
+    .map-panel canvas {
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    .computer-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      overflow: hidden;
+      background: #00a846;
+      color: #f5fff8;
+      font-family: system-ui, sans-serif;
+    }
+
+    .computer-screen[hidden] {
+      display: none;
+    }
+
+    .boot-error {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      z-index: 100;
+      width: min(520px, calc(100vw - 36px));
+      translate: -50% -50%;
+      padding: 16px;
+      border: 1px solid #c56962;
+      border-radius: 8px;
+      background: #241817;
+      color: #ffd8d4;
+      font: 13px/1.5 ui-monospace, monospace;
+      white-space: pre-wrap;
+    }
+
+    .desktop-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 42px;
+      padding: 0 10px 0 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(0, 45, 22, 0.82);
+    }
+
+    .desktop-bar strong {
+      font-size: 13px;
+    }
+
+    .power-button {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.34);
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.25);
+      color: #fff;
+      place-items: center;
+    }
+
+    .desktop-icons {
+      position: absolute;
+      left: 18px;
+      top: 62px;
+      display: grid;
+      grid-template-columns: repeat(2, 82px);
+      gap: 16px 12px;
+    }
+
+    .desktop-icon {
+      display: grid;
+      width: 82px;
+      height: 86px;
+      padding: 7px 4px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: #fff;
+      font-size: 11px;
+      place-items: center;
+      text-shadow: 0 1px 3px #003b1c;
+    }
+
+    .desktop-icon:hover,
+    .desktop-icon:focus-visible {
+      border-color: rgba(255, 255, 255, 0.5);
+      background: rgba(0, 62, 30, 0.34);
+      outline: none;
+    }
+
+    .desktop-glyph {
+      display: grid;
+      width: 46px;
+      height: 46px;
+      border: 1px solid rgba(255, 255, 255, 0.46);
+      border-radius: 7px;
+      background: #e7ecee;
+      color: #17322a;
+      font-size: 24px;
+      font-weight: 800;
+      text-shadow: none;
+      place-items: center;
+    }
+
+    .java-cup {
+      position: relative;
+      width: 27px;
+      height: 19px;
+      margin-top: 8px;
+      border: 3px solid #9b332e;
+      border-top: 0;
+      border-radius: 0 0 10px 10px;
+    }
+
+    .java-cup::before {
+      position: absolute;
+      left: 5px;
+      top: -13px;
+      width: 12px;
+      height: 10px;
+      border-left: 2px solid #2e5f9b;
+      border-radius: 50%;
+      content: '';
+      transform: rotate(18deg);
+    }
+
+    .java-cup::after {
+      position: absolute;
+      right: -10px;
+      top: 4px;
+      width: 8px;
+      height: 8px;
+      border: 3px solid #9b332e;
+      border-left: 0;
+      border-radius: 0 7px 7px 0;
+      content: '';
+    }
+
+    .desktop-window {
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      width: min(760px, calc(100vw - 44px));
+      height: min(520px, calc(100vh - 86px));
+      translate: -50% -50%;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.38);
+      border-radius: 8px;
+      background: #e8eceb;
+      color: #18211f;
+      box-shadow: 0 24px 70px rgba(0, 34, 16, 0.48);
+    }
+
+    .desktop-window[hidden] {
+      display: none;
+    }
+
+    .window-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 38px;
+      padding-left: 12px;
+      background: #183d2c;
+      color: #fff;
+    }
+
+    .window-close {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border-radius: 0;
+      background: #a83e38;
+      color: #fff;
+      font-size: 20px;
+    }
+
+    .window-content {
+      height: calc(100% - 38px);
+      overflow: auto;
+      padding: 18px;
+    }
+
+    .window-content h2 {
+      margin: 0 0 12px;
+      font-size: 19px;
+    }
+
+    .window-content p {
+      line-height: 1.55;
+    }
+
+    .terminal-output {
+      height: calc(100% - 42px);
+      overflow: auto;
+      margin: 0;
+      padding: 12px;
+      background: #101614;
+      color: #a8efbd;
+      font: 13px/1.5 ui-monospace, monospace;
+      white-space: pre-wrap;
+    }
+
+    .terminal-input {
+      width: 100%;
+      height: 42px;
+      border: 0;
+      border-top: 1px solid #33443d;
+      padding: 0 12px;
+      background: #17201d;
+      color: #fff;
+      font: 13px ui-monospace, monospace;
+      outline: none;
+    }
+
+    .block-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 46px;
+      padding: 7px 10px;
+      background: #cdd5d2;
+    }
+
+    .block-swatch {
+      width: 31px;
+      height: 31px;
+      padding: 0;
+      border: 2px solid transparent;
+      border-radius: 4px;
+    }
+
+    .block-swatch.active {
+      border-color: #101614;
+    }
+
+    .block-game-canvas {
+      width: 100%;
+      height: calc(100% - 46px);
+      background: #86bed2;
+      image-rendering: pixelated;
+      cursor: crosshair;
+    }
+
+    .notice strong {
+      color: var(--text);
+    }
+
+    .mobile-pad {
+      position: fixed;
+      left: 18px;
+      bottom: 86px;
+      display: none;
+      grid-template-columns: repeat(3, 44px);
+      grid-template-rows: repeat(3, 44px);
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    .mobile-pad button {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.11);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 88px;
+        align-items: flex-start;
+      }
+
+      .readout {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+        grid-template-columns: 1fr;
+        min-width: 88px;
+      }
+
+      .brand {
+        grid-column: 1;
+        grid-row: 1;
+        min-width: 0;
+      }
+
+      .actions {
+        grid-column: 1;
+        grid-row: 2;
+        flex-direction: row;
+        align-items: stretch;
+      }
+
+      .actions button {
+        width: auto;
+        min-width: 0;
+        flex: 1;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .wanted-indicator {
+        top: 240px;
+        width: 176px;
+      }
+
+      .mobile-pad {
+        display: grid;
+      }
+
+      .notice {
+        right: 18px;
+        bottom: 18px;
+      }
+
+      .map-panel {
+        top: 200px;
+        width: 160px;
+        height: 118px;
+      }
+
+      .map-panel.expanded {
+        top: 18px;
+        height: calc(100vh - 36px);
+      }
+    }
+  </style>
+  <script type="module" crossorigin src="./assets/index-CUcK4VYk.js"></script>
 </head>
 <body>
-<!-- 全局氛围叠层 -->
-<div class="fx-vignette" aria-hidden="true"></div>
-<div class="fx-grain" aria-hidden="true"></div>
-<div class="fx-scanline" aria-hidden="true"></div>
-
-<!-- 导航 -->
-<header class="nav" id="nav">
-  <a class="nav__brand" href="#top">
-    <span class="nav__brand-cn">浙大夜惊魂</span>
-    <span class="nav__brand-en">THE HAUNTING OF ZJU</span>
-  </a>
-  <nav class="nav__links">
-    <a href="#story">故事缘起</a>
-    <a href="#feng-shui">风水档案</a>
-    <a href="#characters">人物图鉴</a>
-    <a href="#game">玩法</a>
-    <a href="#feedback">反馈</a>
-    <a class="nav__cta" href="./game/">▸ 进入校园</a>
-  </nav>
-  <button class="nav__burger" id="burger" aria-label="菜单">☰</button>
-</header>
-
-<!-- HERO -->
-<section class="hero" id="top">
-  <div class="hero__threads" aria-hidden="true">
-    <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
-      <g stroke="#7a1417" stroke-width="1" fill="none" opacity="0.55">
-        <path d="M120 80 L620 420 L300 760" />
-        <path d="M1320 120 L780 400 L1100 820" />
-        <path d="M620 420 L780 400" />
-        <path d="M300 760 L1100 820" />
-        <path d="M620 420 L120 500 L780 400" />
-      </g>
-      <g fill="#8b1a1a">
-        <circle cx="120" cy="80" r="4"/><circle cx="620" cy="420" r="5"/>
-        <circle cx="300" cy="760" r="4"/><circle cx="1320" cy="120" r="4"/>
-        <circle cx="780" cy="400" r="5"/><circle cx="1100" cy="820" r="4"/>
-        <circle cx="120" cy="500" r="4"/>
-      </g>
-    </svg>
-  </div>
-
-  <div class="hero__inner">
-    <p class="hero__eyebrow">国内首部 · 高校实景恐怖小说改编</p>
-    <h1 class="hero__title glitch" data-text="浙大夜惊魂">浙大夜惊魂</h1>
-    <p class="hero__en">THE HAUNTING OF ZJU</p>
-    <p class="hero__series">校 园 悬 疑 侦 探 系 列</p>
-    <p class="hero__tag">紫金港的夜里，先放烟花，再动土。<br/>他们说，那叫「扫地」——赶走不干净的东西。</p>
-    <div class="hero__cta hero__cta--single">
-      <a class="btn btn--blood btn--hero" href="./game/">
-        <span>▶ 直接开始游戏</span>
-        <small>无需下载 · 网页即玩</small>
-      </a>
+  <div class="boot-screen" id="bootScreen" role="status" aria-live="polite">
+    <div class="boot-status">
+      <strong>正在载入城市</strong>
+      <div class="boot-track" aria-hidden="true"></div>
     </div>
-    <p class="hero__scroll">向下滚动，查看档案与更多内容 ↓</p>
   </div>
-</section>
+  <pre class="boot-error" id="bootError" hidden></pre>
+  <script>
+    function showBootError(message) {
+      document.querySelector('#bootScreen')?.classList.add('is-ready');
+      const panel = document.querySelector('#bootError');
+      panel.hidden = false;
+      panel.textContent = `启动失败：${message || '未知错误'}`;
+    }
+    window.addEventListener('error', (event) => {
+      showBootError(event.message);
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      showBootError(event.reason?.message || String(event.reason || '未知错误'));
+    });
+  </script>
+  <main id="app" aria-label="城市生存模拟器 3D 视窗"></main>
 
-<!-- 故事缘起 -->
-<section class="section story" id="story">
-  <div class="section__label"><span>档案 01</span> 故事缘起</div>
-  <div class="story__grid">
-    <div class="story__lead">
-      <h2>深夜自修，回不去的寝室</h2>
-      <p>08 年 3 月初，生命科学系大三学生<strong>张超</strong>，跟着室友去了全校最偏僻的西南角——医学院图书馆自修。</p>
-      <p>十点整，一直埋头做题的同伴忽然抬起头，压低声音：「你有没有听到<em>什么声音</em>？」</p>
-      <p>草地里没有虫鸣，走廊尽头没有人影。可从那一夜起，敲窗声、镜中的倒影、飘忽的歌声，开始一件件找上门来。而三年恋人<strong>白秋</strong>，正是在那样一个深夜，选择沉默地离开。</p>
-      <p class="story__quote">"但尽管学校改造好了，一些不小心的人，总是……"</p>
-    </div>
-    <aside class="story__meta">
-      <h3>作品档案</h3>
-      <dl>
-        <dt>原著</dt><dd>《浙大夜惊魂》· 紫金陈</dd>
-        <dt>类型</dt><dd>校园 · 悬疑 · 恐怖 · 侦探推理</dd>
-        <dt>舞台</dt><dd>Z 大紫金港校区（实景）</dd>
-        <dt>时间</dt><dd>2008 年初春 · 连绵深夜</dd>
-        <dt>形态</dt><dd>2.5D 等距视角探索游戏</dd>
-      </dl>
-    </aside>
-  </div>
-</section>
-
-<!-- 风水档案 -->
-<section class="section feng" id="feng-shui">
-  <div class="section__label"><span>档案 02</span> 风水堪舆 · 校园秘密</div>
-  <p class="feng__intro">紫金港建成前，是杭州西面的一片大沼泽。多水之地，阴气重。整座校区的布局、命名、乃至一草一木，据说都暗合五行——为的是<strong>镇住</strong>些什么。</p>
-
-  <div class="feng__questions">
-    <article><span>?</span><p>校区周边每逢夜晚施工，为何总是<strong>先放烟花</strong>？</p></article>
-    <article><span>?</span><p>七大学园，为何以<strong>天地金木水火土</strong>命名？</p></article>
-    <article><span>?</span><p>主要建筑的布置与命名，为何<strong>全部暗合五行</strong>？</p></article>
-    <article><span>?</span><p>半个世纪前创立的神秘学生社团——<strong>求是会</strong>，是否至今仍存？</p></article>
-  </div>
-
-  <h3 class="feng__sub">七大学园 · 五行归位</h3>
-  <div class="feng__yuan">
-    <div class="yuan" data-el="天"><b>紫云</b><span>天</span></div>
-    <div class="yuan" data-el="地"><b>蓝田</b><span>地</span></div>
-    <div class="yuan" data-el="金"><b>碧峰</b><span>金</span></div>
-    <div class="yuan" data-el="木"><b>翠柏</b><span>木</span></div>
-    <div class="yuan" data-el="水"><b>青溪</b><span>水</span></div>
-    <div class="yuan" data-el="火"><b>丹阳</b><span>火</span></div>
-    <div class="yuan" data-el="土"><b>白沙</b><span>土</span></div>
-  </div>
-  <p class="feng__foot">图书馆旁的行政楼，俯视是一只<strong>眼睛</strong>的形状——有眼珠，有睫毛。据说，就是为了镇住整个紫金港。</p>
-</section>
-
-<!-- 人物图鉴 -->
-<section class="section chars" id="characters">
-  <div class="section__label"><span>档案 03</span> 人物图鉴</div>
-  <p class="chars__intro">卷入这场惊魂夜的人。点击卡片，翻开他们的档案。</p>
-  <div class="chars__grid" id="charsGrid"><!-- JS 注入 --></div>
-  <div class="chars__more">
-    <span>其余角色档案正在解封中……</span>
-    <small>更多人物立绘将陆续上传</small>
-  </div>
-</section>
-
-<!-- 玩法 -->
-<section class="section game" id="game">
-  <div class="section__label"><span>档案 04</span> 玩法 · 进入游戏</div>
-  <div class="game__grid">
-    <div class="game__copy">
-      <h2>在深夜的紫金港里，活到天亮</h2>
-      <p>2.5D 等距视角恐怖探索。你将扮演张超，在漆黑的校园里调查一连串坠楼与失踪事件背后的真相。</p>
-      <ul class="game__feats">
-        <li><b>多分支剧情</b><span>选择决定你走向哪一个结局</span></li>
-        <li><b>理智管理</b><span>看得越多，越接近崩溃的边缘</span></li>
-        <li><b>道具系统</b><span>红色羽绒服、日记本、校园卡……每样都有来历</span></li>
-        <li><b>鬼魂追逐</b><span>有些走廊，你只能一直往前，不能回头</span></li>
-      </ul>
-      <div class="game__cta">
-        <a class="btn btn--blood" href="./game/"><span>▶ 网页直接开玩</span></a>
-        <a class="btn btn--ghost" href="https://github.com/QAZWSX-DEL/book" target="_blank" rel="noopener">
-          <span>⌥ GitHub 仓库</span>
-          <small>源码 · Star · Fork</small>
-        </a>
+  <section class="hud" aria-label="界面">
+    <div class="topbar">
+      <div class="brand">
+        <strong>城市生存模拟器</strong>
+        <span>第一视角原型</span>
+      </div>
+      <div class="readout" aria-label="状态">
+        <div class="metric"><span>生命</span><strong id="health">100</strong></div>
+        <div class="metric"><span>体力</span><strong id="stamina">100</strong></div>
+        <div class="metric"><span>现金</span><strong id="money">¥0</strong></div>
+        <div class="metric"><span>坐标</span><strong id="coords">0,0</strong></div>
+      </div>
+      <div class="actions">
+        <button id="enterWorld" type="button">进入</button>
+        <button id="toggleHands" class="secondary" type="button">隐藏双手</button>
       </div>
     </div>
-    <div class="game__panel">
-      <div class="game__screen">
-        <div class="game__hud"><span>SANITY</span><i></i></div>
-        <p class="game__typed" id="typed"></p>
-        <div class="game__url">
-          <label>直达地址</label>
-          <a href="./game/">qazwsx-del.github.io/book</a>
-        </div>
-      </div>
+    <div class="wanted-indicator" id="wantedIndicator">通缉 ♡ ♡ ♡ ♡ ♡</div>
+    <div class="crosshair" aria-hidden="true"></div>
+    <div class="mobile-pad" aria-label="移动">
+      <span></span><button data-move="forward" type="button">W</button><span></span>
+      <button data-move="left" type="button">A</button><span></span><button data-move="right" type="button">D</button>
+      <span></span><button data-move="back" type="button">S</button><span></span>
     </div>
-  </div>
-</section>
-
-<!-- 反馈 -->
-<section class="section feedback" id="feedback">
-  <div class="section__label"><span>档案 05</span> 用户反馈 · 留下线索</div>
-  <div class="feedback__grid">
-    <div class="feedback__intro">
-      <h2>你在校园里，看见了什么？</h2>
-      <p>Bug、剧情建议、灵异体验、或者只是想吐槽——都欢迎留言。你的每一条反馈，都会被记入档案。</p>
-      <div class="feedback__links">
-        <a href="https://github.com/QAZWSX-DEL/book/issues" target="_blank" rel="noopener">🗂 在 GitHub Issues 浏览全部反馈</a>
-      </div>
+    <p class="notice" id="notice"><strong>WASD</strong> 移动，鼠标控制视角。</p>
+    <div class="interaction-prompt" id="interactionPrompt" aria-live="polite">
+      <span id="interactionText"></span>
+      <div class="interaction-progress"><span id="interactionProgress"></span></div>
     </div>
-    <form class="feedback__form" id="fbForm">
-      <label>类型
-        <select id="fbType">
-          <option value="Bug 反馈">🐞 Bug 反馈</option>
-          <option value="剧情 / 玩法建议">💡 剧情 / 玩法建议</option>
-          <option value="灵异体验分享">👻 灵异体验分享</option>
-          <option value="其他">✉ 其他</option>
-        </select>
-      </label>
-      <label>一句话标题
-        <input id="fbTitle" type="text" placeholder="例如：西区厕所的镜子闪了一下" maxlength="60" />
-      </label>
-      <label>详细描述
-        <textarea id="fbBody" rows="5" placeholder="发生在哪里？你看到 / 遇到了什么？"></textarea>
-      </label>
-      <button type="submit" class="btn btn--blood"><span>提交到 GitHub Issues ▸</span></button>
-      <p class="feedback__note">提交将带着你填写的内容跳转到 GitHub 新建 Issue 页面，需登录 GitHub 账号确认发送。</p>
-    </form>
-  </div>
-</section>
+    <section class="loot-panel" id="lootPanel" hidden>
+      <div class="loot-head">
+        <h2>附近物品</h2>
+        <button class="loot-close" id="lootClose" type="button" title="关闭物品栏" aria-label="关闭物品栏">×</button>
+      </div>
+      <p>鼠标停在物品上，按 F 拾取</p>
+      <div class="loot-list" id="lootList"></div>
+    </section>
+    <section class="elevator-panel" id="elevatorPanel" hidden>
+      <div class="elevator-head">
+        <strong id="elevatorPanelTitle">电梯控制</strong>
+        <button class="elevator-close" id="elevatorClose" type="button" title="关闭">×</button>
+      </div>
+      <div class="elevator-display">
+        <span id="elevatorFloorDisplay">1</span>
+        <span class="elevator-direction" id="elevatorDirectionDisplay"></span>
+      </div>
+      <div class="elevator-buttons" id="elevatorButtons"></div>
+    </section>
+    <section class="trade-panel" id="tradePanel" hidden aria-label="交易面板">
+      <header class="trade-head">
+        <strong id="tradeTitle">商店</strong>
+        <button class="trade-close" id="tradeClose" type="button" title="关闭交易" aria-label="关闭交易">&times;</button>
+      </header>
+      <div class="trade-balance"><span>当前余额</span><strong id="tradeMoney">¥0</strong></div>
+      <div class="trade-list" id="tradeList"></div>
+    </section>
+  </section>
 
-<footer class="footer">
-  <div class="footer__brand">
-    <span class="footer__cn">浙大夜惊魂</span>
-    <span class="footer__en">THE HAUNTING OF ZJU · 校园悬疑侦探系列</span>
+  <div class="hand-shadow" aria-hidden="true"></div>
+  <section class="map-panel" id="mapPanel" aria-label="城市地图">
+    <canvas id="cityMap" width="560" height="420"></canvas>
+  </section>
+  <section class="computer-screen" id="computerScreen" hidden aria-label="住宅电脑桌面">
+    <header class="desktop-bar">
+      <strong>住宅电脑</strong>
+      <span class="computer-income-status" id="computerIncomeStatus">5 秒后收入 ¥10</span>
+      <button class="power-button" id="computerPower" type="button" title="退出电脑" aria-label="退出电脑">&#x23FB;</button>
+    </header>
+    <div class="desktop-icons">
+      <button class="desktop-icon" type="button" data-desktop-app="files">
+        <span class="desktop-glyph">F</span><span>文件</span>
+      </button>
+      <button class="desktop-icon" type="button" data-desktop-app="java">
+        <span class="desktop-glyph"><span class="java-cup"></span></span><span>Java</span>
+      </button>
+      <button class="desktop-icon" type="button" data-desktop-app="terminal">
+        <span class="desktop-glyph">&gt;_</span><span>终端</span>
+      </button>
+      <button class="desktop-icon" type="button" data-desktop-app="minecraft">
+        <span class="desktop-glyph">M</span><span>Minecraft</span>
+      </button>
+    </div>
+    <section class="desktop-window" id="desktopWindow" hidden>
+      <header class="window-bar">
+        <strong id="desktopWindowTitle">应用</strong>
+        <button class="window-close" id="desktopWindowClose" type="button" title="关闭窗口" aria-label="关闭窗口">&times;</button>
+      </header>
+      <div class="window-content" id="desktopWindowContent"></div>
+    </section>
+  </section>
+  <div class="sleep-overlay" id="sleepOverlay" hidden aria-live="polite">
+    <strong id="sleepStatus">睡眠中</strong>
   </div>
-  <div class="footer__links">
-    <a href="./game/">开始游戏</a>
-    <a href="https://github.com/QAZWSX-DEL/book" target="_blank" rel="noopener">GitHub 仓库</a>
-    <a href="#feedback">用户反馈</a>
-  </div>
-  <p class="footer__fine">原著《浙大夜惊魂》· 紫金陈　｜　本站为同人改编游戏官网，仅供学习与非商业交流。故事纯属虚构。</p>
-</footer>
 
-<script src="./main.js"></script>
 </body>
 </html>
