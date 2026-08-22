@@ -1886,7 +1886,8 @@ function syncTodUI() {
 
 async function boot() {
   // 联机:房间号即世界种子 —— 同号好友生成同一片海域与同一座荒岛
-  const mpRoom = new URLSearchParams(location.search).get('room');
+  const pageParams = new URLSearchParams(location.search);
+  const mpRoom = pageParams.get('room');
   let restoreRandom = null;
   if (mpRoom) {
     let hs = 2166136261 >>> 0;
@@ -1902,50 +1903,20 @@ async function boot() {
     };
     restoreRandom = () => { Math.random = origRandom; };
   }
-  // --- WebGPU 能力检测(三级:API → 适配器 → 画布上下文) ---
-  if (!navigator.gpu) {
-    window.__oceanError(
-      '当前浏览器不支持 WebGPU。请使用 Chrome / Edge 113+、Safari 26+ 或最新版 Firefox;Safari 17/18 需在 开发 → 实验性功能 中手动开启 WebGPU。',
-      'navigator.gpu is undefined'
-    );
-    return;
-  }
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      window.__oceanError(
-        '浏览器有 WebGPU 接口,但拿不到 GPU 适配器。请确认系统显卡驱动正常、浏览器"硬件加速"已开启,然后完全退出浏览器重试。',
-        'navigator.gpu.requestAdapter() 返回 null'
-      );
-      return;
-    }
-  } catch (err) {
-    window.__oceanError('WebGPU 适配器请求失败。', err && err.message);
-    return;
-  }
-
-  $('loading-status').textContent = '正在初始化 WebGPU 渲染器';
-
+  // --- WebGPU 优先,WebGL2 自动兼容回退 ---
+  // WebGPURenderer 自带 WebGL2 后端。旧版代码在 navigator.gpu 不存在时
+  // 直接终止,导致大量手机、Safari 和关闭硬件加速的浏览器无法进入。
   const canvas = $('scene');
-  // 预检:部分浏览器(套壳 Chromium 等)暴露了 navigator.gpu,
-  // 但 canvas.getContext('webgpu') 返回 null —— three 内部会对 null
-  // 直接 .configure() 抛出 TypeError。提前检出并给出明确指引,
-  // 同时把自建 context 传给渲染器,避免二次创建。
-  let gpuContext = null;
-  try { gpuContext = canvas.getContext ? canvas.getContext('webgpu') : null; } catch (_) { gpuContext = null; }
-  if (!gpuContext) {
-    window.__oceanError(
-      '当前浏览器无法创建 WebGPU 画布上下文。请换用 Chrome / Edge 113+ 或 Safari 26+;若已经是,请在设置里开启"硬件加速 / 图形加速"后重启浏览器再试。',
-      "canvas.getContext('webgpu') 返回 null"
-    );
-    return;
-  }
+  const forceWebGL = pageParams.get('renderer') === 'webgl' || !navigator.gpu;
+  $('loading-status').textContent = forceWebGL
+    ? '正在初始化 WebGL2 兼容渲染器'
+    : '正在初始化 WebGPU 渲染器';
 
   let renderer;
   try {
-    renderer = new THREE.WebGPURenderer({ canvas, context: gpuContext, antialias: true });
+    renderer = new THREE.WebGPURenderer({ canvas, antialias: true, forceWebGL });
   } catch (err) {
-    window.__oceanError('WebGPU 渲染器创建失败,请换用 Chrome / Edge 113+ 或 Safari 26+。', err && err.message);
+    window.__oceanError('图形渲染器创建失败。请换用最新版 Chrome、Edge、Safari 或 Firefox。', err && err.message);
     return;
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, DPR_CAP));
@@ -1956,9 +1927,12 @@ async function boot() {
   try {
     await renderer.init();
   } catch (err) {
-    window.__oceanError('WebGPU 设备初始化失败,请确认 GPU 可用且未禁用硬件加速。', err && err.message);
+    window.__oceanError('无法启动 WebGPU 或 WebGL2。请更新浏览器并确认硬件加速已开启。', err && err.message);
     return;
   }
+  $('loading-status').textContent = renderer.backend && renderer.backend.isWebGLBackend
+    ? 'WebGL2 兼容模式已启用'
+    : 'WebGPU 已启用';
 
   // --- 场景与相机 ---
   const scene = new THREE.Scene();
@@ -5730,13 +5704,34 @@ async function boot() {
     chaseDist = Math.max(8, Math.min(30, chaseDist + Math.sign(e.deltaY) * 1.5));
   }, { passive: true });
 
-  // 岛上第一人称:拖动鼠标环顾(OrbitControls 此时已禁用);快速点按 = 射箭
+  // 鼠标移动即可环顾;按住拖动仍保留为兼容操作,快速点按 = 射箭。
   let lookDrag = null;
+  let hoverLook = null;
+  canvas.addEventListener('pointerenter', (e) => {
+    if (e.pointerType !== 'touch') hoverLook = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('pointerleave', () => { hoverLook = null; });
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;               // 只有左键进入视角拖动/射箭(开镜用 4 键)
     if (walker.on) lookDrag = { x: e.clientX, y: e.clientY, t: e.timeStamp, moved: 0 };
   });
   window.addEventListener('pointermove', (e) => {
+    const isMouse = !e.pointerType || e.pointerType === 'mouse';
+    if (isMouse && e.buttons === 0 && hoverLook) {
+      const dx = Math.max(-80, Math.min(80,
+        e.movementX || (e.clientX - hoverLook.x)));
+      const dy = Math.max(-80, Math.min(80,
+        e.movementY || (e.clientY - hoverLook.y)));
+      if (walker.on) {
+        walker.viewYaw -= dx * 0.0042;
+        walker.viewPitch = Math.max(-1.15, Math.min(1.15,
+          walker.viewPitch - dy * 0.0042));
+      } else if (controls.enabled && !camAnim && !driving && !pilotSub && !riding) {
+        controls.rotateLeft(dx * 0.0028);
+        controls.rotateUp(dy * 0.0024);
+      }
+    }
+    if (isMouse) hoverLook = { x: e.clientX, y: e.clientY };
     if (!lookDrag || !walker.on) return;
     walker.viewYaw -= (e.clientX - lookDrag.x) * 0.0042;
     walker.viewPitch = Math.max(-1.15, Math.min(1.15,
@@ -6204,16 +6199,73 @@ async function boot() {
     else document.documentElement.requestFullscreen();
   });
   const setUiHidden = (hide) => document.body.classList.toggle('ui-hidden', hide);
-  const joinRoom = () => {
-    const code = window.prompt('输入房间号 —— 好友输入同一个号,就会和你出现在同一片海域与荒岛:', '');
-    if (code && code.trim()) {
+  const startScreen = $('start-screen');
+  const playerNameInput = $('player-name');
+  const roomCodeInput = $('room-code');
+  let autoJoinStarted = false;
+  const normalizeRoom = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 12);
+  const setStartStatus = (message, isError = false) => {
+    const el = $('start-status');
+    el.textContent = message || '';
+    el.classList.toggle('error', isError);
+  };
+  const rememberedName = (() => {
+    try { return sessionStorage.getItem('ocean-player-name') || ''; } catch (_) { return ''; }
+  })();
+  playerNameInput.value = rememberedName || ('海上旅人' + String(Math.floor(Math.random() * 90 + 10)));
+  roomCodeInput.value = normalizeRoom(mpRoom || '');
+  const rememberName = () => {
+    const name = (playerNameInput.value || '海上旅人').trim().slice(0, 16);
+    playerNameInput.value = name;
+    try { sessionStorage.setItem('ocean-player-name', name); } catch (_) { /* private mode */ }
+    return name;
+  };
+  const reloadForRoom = (code) => {
+    rememberName();
+    const u = new URL(location.href);
+    u.searchParams.set('room', code);
+    u.searchParams.set('mode', 'multi');
+    u.searchParams.set('autojoin', '1');
+    location.href = u.toString();
+  };
+  const startSelectedRoom = async () => {
+    const code = normalizeRoom(roomCodeInput.value);
+    if (!code) { setStartStatus('请输入房间号。', true); roomCodeInput.focus(); return; }
+    roomCodeInput.value = code;
+    const name = rememberName();
+    if (normalizeRoom(mpRoom) !== code) { reloadForRoom(code); return; }
+    if (autoJoinStarted) return;
+    autoJoinStarted = true;
+    setStartStatus('正在连接房间 ' + code + '…');
+    try {
+      const info = await connectRoom(code, name);
+      setStartStatus(info.host ? '房间已创建，正在等待好友加入…' : '连接成功，正在进入海域…');
       const u = new URL(location.href);
-      u.searchParams.set('room', code.trim());
-      location.href = u.toString();
+      u.searchParams.delete('autojoin');
+      history.replaceState(null, '', u);
+      setTimeout(() => startScreen.classList.remove('show'), info.host ? 650 : 350);
+    } catch (err) {
+      autoJoinStarted = false;
+      setStartStatus((err && err.message) || '多人连接失败，请稍后重试。', true);
     }
   };
-  $('btn-mp').addEventListener('click', joinRoom);
-  if ($('btn-room')) $('btn-room').addEventListener('click', joinRoom);
+  $('start-single').addEventListener('click', () => {
+    startScreen.classList.remove('show');
+    setStartStatus('');
+  });
+  $('create-room').addEventListener('click', () => {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    roomCodeInput.value = code;
+    reloadForRoom(code);
+  });
+  $('join-room').addEventListener('click', startSelectedRoom);
+  roomCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startSelectedRoom(); });
+  const openRoomMenu = () => {
+    startScreen.classList.add('show');
+    roomCodeInput.focus();
+  };
+  $('btn-mp').addEventListener('click', openRoomMenu);
+  if ($('btn-room')) $('btn-room').addEventListener('click', openRoomMenu);
   $('btn-hide').addEventListener('click', () => setUiHidden(true));
   $('ui-show').addEventListener('click', () => setUiHidden(false));
   window.addEventListener('keydown', (e) => {
@@ -6458,11 +6510,20 @@ async function boot() {
       ready = true;
       window.__oceanReady = true;
       $('loading').classList.add('hidden');
+      startScreen.classList.add('show');
+      if (pageParams.get('mode') === 'multi' && pageParams.get('autojoin') === '1' && mpRoom) {
+        setTimeout(startSelectedRoom, 0);
+      }
     }
   }
 
-  // ---- 联机:同房间号 → 同一片海域与荒岛(世界种子同步)+ 位置互播 ----
-  const mp = { ws: null, id: 0, peers: new Map(), sendT: 0 };
+  // ---- 联机:房间号同步世界种子 + PeerJS 点对点位置互播 ----
+  // GitHub Pages 没有 /ws 或 /api 后端,所以这里由房主浏览器承担房间中继。
+  const mp = {
+    ws: null, id: 0, peers: new Map(), sendT: 0,
+    peer: null, host: false, room: '', nickname: '',
+    connections: new Map(), clientConn: null,
+  };
   const peerBoatGeo = createSpeedboatGeometry();
   const peerPersonGeo = (() => {
     const body = new THREE.CapsuleGeometry(0.17, 0.95, 4, 10);
@@ -6496,53 +6557,197 @@ async function boot() {
     return { id, group, person, boat, titan, mode: 'free', tx: 0, ty: 0, tz: 0, th: 0, cx: 0, cy: 0, cz: 0, ch: 0,
              tg: null, tgx: 0, tgy: 0, tgz: 0, tgh: 0 };
   }
-  function connectRoom(code) {
-    let ws;
-    try {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(proto + '://' + location.host + location.pathname + 'ws');
-    } catch {
-      showToast('联机服务器未连接 —— 静态分享链接只支持单人;点工作区「发布应用」正式发布后,房间号联机即可用');
+  function peerHash(value) {
+    let h = 2166136261 >>> 0;
+    for (const ch of String(value)) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function roomHostId(code) { return 'ocean-v4-' + peerHash(code).toString(36); }
+  function playerIdFromPeer(peerId) { return 2 + (peerHash(peerId) % 900000); }
+  function setPeerTransportOpen() {
+    mp.ws = {
+      readyState: 1,
+      send(payload) {
+        let message = payload;
+        if (typeof payload === 'string') {
+          try { message = JSON.parse(payload); } catch (_) { return; }
+        }
+        sendPeerMessage(message);
+      },
+    };
+  }
+  function removePeerVisual(id) {
+    const p = mp.peers.get(id);
+    if (!p) return;
+    scene.remove(p.group);
+    scene.remove(p.titan);
+    mp.peers.delete(id);
+  }
+  function handlePeerMessage(m) {
+    if (!m || typeof m !== 'object') return;
+    if (m.t === 'joined') {
+      mp.id = m.id;
+      showToast('🌐 已加入房间 ' + mp.room + '(在线 ' + m.count + ' 人)· 同一片海域,荒岛见!');
+    } else if (m.t === 'peer-join') {
+      if (m.id !== mp.id && !mp.peers.has(m.id)) mp.peers.set(m.id, makePeer(m.id));
+      showToast('👋 一位好友驶入了这片海域(在线 ' + m.count + ' 人)');
+    } else if (m.t === 'state') {
+      if (m.id === mp.id) return;
+      let p = mp.peers.get(m.id);
+      if (!p) { p = makePeer(m.id); mp.peers.set(m.id, p); }
+      p.mode = m.m; p.tx = m.x; p.ty = m.y; p.tz = m.z; p.th = m.h;
+      p.tg = m.g || null;
+    } else if (m.t === 'hit') {
+      damageWalker(m.dmg || 10, '被好友击毙');
+      showToast('💢 好友的' + (m.kind === 'bullet' ? '子弹' : '箭矢') + '命中了你!生命 -' + (m.dmg || 10));
+    } else if (m.t === 'thit') {
+      const tgt = myTamedTitan();
+      if (tgt) {
+        tgt.hp -= m.dmg || 5;
+        if (tgt.hp <= 0) {
+          killTitan(tgt);
+          showToast('☠ 你的' + tgt.sp.name + '被好友击杀,翻了肚皮……');
+        } else showToast('⚠ 你的' + tgt.sp.name + '遭到好友攻击!(生命 ' + Math.max(0, tgt.hp) + '/' + tgt.maxHp + ')');
+      }
+    } else if (m.t === 'peer-leave') {
+      removePeerVisual(m.id);
+      showToast('好友离开了海域');
+    }
+  }
+  function hostBroadcast(message, exceptPeer = '') {
+    for (const [peerId, record] of mp.connections) {
+      if (peerId !== exceptPeer && record.joined && record.conn.open) record.conn.send(message);
+    }
+  }
+  function routeHostMessage(sourceId, message, sourcePeer = '') {
+    if (message.t === 'state') {
+      const forwarded = { ...message, id: sourceId };
+      if (sourceId !== mp.id) handlePeerMessage(forwarded);
+      hostBroadcast(forwarded, sourcePeer);
       return;
     }
-    mp.ws = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ t: 'join', room: code }));
-    ws.onmessage = (ev) => {
-      let m;
-      try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.t === 'joined') {
-        mp.id = m.id;
-        showToast('🌐 已加入房间 ' + code + '(在线 ' + m.count + ' 人)· 同一片海域,荒岛见!');
-      } else if (m.t === 'peer-join') {
-        if (!mp.peers.has(m.id)) mp.peers.set(m.id, makePeer(m.id));
-        showToast('👋 一位好友驶入了这片海域(在线 ' + m.count + ' 人)');
-      } else if (m.t === 'state') {
-        let p = mp.peers.get(m.id);
-        if (!p) { p = makePeer(m.id); mp.peers.set(m.id, p); }
-        p.mode = m.m; p.tx = m.x; p.ty = m.y; p.tz = m.z; p.th = m.h;
-        p.tg = m.g || null;                    // 好友驯服的泰坦位置(若有)
-      } else if (m.t === 'hit') {
-        // 被好友击中
-        damageWalker(m.dmg || 10, '被好友击毙');
-        showToast('💢 好友的' + (m.kind === 'bullet' ? '子弹' : '箭矢') + '命中了你!生命 -' + (m.dmg || 10));
-      } else if (m.t === 'thit') {
-        // 好友攻击你的驯服泰坦
-        const tgt = myTamedTitan();
-        if (tgt) {
-          tgt.hp -= m.dmg || 5;
-          if (tgt.hp <= 0) {
-            killTitan(tgt);
-            showToast('☠ 你的' + tgt.sp.name + '被好友击杀,翻了肚皮……');
-          } else showToast('⚠ 你的' + tgt.sp.name + '遭到好友攻击!(生命 ' + Math.max(0, tgt.hp) + '/' + tgt.maxHp + ')');
+    if (message.t === 'hit' || message.t === 'thit') {
+      if (message.target === mp.id) handlePeerMessage(message);
+      else {
+        for (const record of mp.connections.values()) {
+          if (record.id === message.target && record.joined && record.conn.open) {
+            record.conn.send(message);
+            break;
+          }
         }
-      } else if (m.t === 'peer-leave') {
-        const p = mp.peers.get(m.id);
-        if (p) { scene.remove(p.group); scene.remove(p.titan); mp.peers.delete(m.id); }
-        showToast('好友离开了海域');
       }
+    }
+  }
+  function sendPeerMessage(message) {
+    if (mp.host) routeHostMessage(mp.id, message);
+    else if (mp.clientConn && mp.clientConn.open) mp.clientConn.send(message);
+  }
+  function acceptHostConnection(conn) {
+    const record = { conn, id: playerIdFromPeer(conn.peer), name: '海上旅人', joined: false };
+    mp.connections.set(conn.peer, record);
+    conn.on('data', (message) => {
+      if (!message || typeof message !== 'object') return;
+      if (message.t === 'join' && !record.joined) {
+        record.joined = true;
+        record.name = String(message.name || '海上旅人').slice(0, 16);
+        const joinedRecords = [...mp.connections.values()].filter((item) => item.joined);
+        const count = 1 + joinedRecords.length;
+        conn.send({ t: 'joined', id: record.id, count });
+        conn.send({ t: 'peer-join', id: mp.id, count });
+        for (const item of joinedRecords) {
+          if (item !== record) {
+            conn.send({ t: 'peer-join', id: item.id, count });
+            if (item.conn.open) item.conn.send({ t: 'peer-join', id: record.id, count });
+          }
+        }
+        showToast('👋 ' + record.name + ' 加入了房间(在线 ' + count + ' 人)');
+        return;
+      }
+      if (record.joined) routeHostMessage(record.id, message, conn.peer);
+    });
+    conn.on('close', () => {
+      if (!mp.connections.has(conn.peer)) return;
+      mp.connections.delete(conn.peer);
+      removePeerVisual(record.id);
+      const count = 1 + [...mp.connections.values()].filter((item) => item.joined).length;
+      hostBroadcast({ t: 'peer-leave', id: record.id, count });
+      showToast(record.name + ' 离开了海域');
+    });
+    conn.on('error', () => { /* close 事件统一清理 */ });
+  }
+  function peerOptions() {
+    return {
+      debug: 0,
+      config: { iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+      ] },
     };
-    ws.onerror = () => showToast('联机服务器未连接 —— 静态分享链接只支持单人;点工作区「发布应用」正式发布后,房间号联机即可用');
-    ws.onclose = () => { if (mp.id) showToast('与联机服务器断开了'); };
+  }
+  function connectRoom(code, nickname) {
+    if (mp.ws && mp.ws.readyState === 1) return Promise.resolve({ host: mp.host });
+    if (!window.Peer) return Promise.reject(new Error('多人组件未加载，请刷新页面后重试。'));
+    mp.room = normalizeRoom(code);
+    mp.nickname = nickname || '海上旅人';
+    const hostId = roomHostId(mp.room);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finishError = (message) => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(message));
+      };
+      const connectAsClient = () => {
+        const peer = new window.Peer(undefined, peerOptions());
+        mp.peer = peer;
+        const timeout = setTimeout(() => finishError('连接超时，请确认房主页面仍然在线。'), 16000);
+        peer.on('open', () => {
+          const conn = peer.connect(hostId, { reliable: true, metadata: { room: mp.room } });
+          mp.clientConn = conn;
+          conn.on('open', () => conn.send({ t: 'join', room: mp.room, name: mp.nickname }));
+          conn.on('data', (message) => {
+            handlePeerMessage(message);
+            if (message && message.t === 'joined' && !settled) {
+              settled = true;
+              clearTimeout(timeout);
+              setPeerTransportOpen();
+              resolve({ host: false });
+            }
+          });
+          conn.on('close', () => {
+            if (mp.ws) mp.ws.readyState = 3;
+            if (!settled) finishError('房间不存在或房主已经离开。');
+            else showToast('与房主的连接已断开');
+          });
+          conn.on('error', () => finishError('无法连接房间，请检查房间号和网络。'));
+        });
+        peer.on('error', (err) => {
+          if (!settled && err && err.type === 'peer-unavailable') finishError('房间不存在或房主尚未进入。');
+          else if (!settled) finishError('多人网络连接失败，请稍后重试。');
+        });
+      };
+      const candidate = new window.Peer(hostId, peerOptions());
+      mp.peer = candidate;
+      const hostTimeout = setTimeout(() => finishError('多人服务连接超时，请稍后重试。'), 16000);
+      candidate.on('open', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hostTimeout);
+        mp.host = true;
+        mp.id = 1;
+        setPeerTransportOpen();
+        showToast('🌐 已创建房间 ' + mp.room + ' · 把房间号发给好友');
+        resolve({ host: true });
+      });
+      candidate.on('connection', acceptHostConnection);
+      candidate.on('error', (err) => {
+        if (err && err.type === 'unavailable-id' && !settled) {
+          clearTimeout(hostTimeout);
+          try { candidate.destroy(); } catch (_) { /* ignore */ }
+          connectAsClient();
+        } else if (!settled) finishError('多人服务暂时不可用，请稍后重试。');
+      });
+    });
   }
   function updateMultiplayer(dt) {
     // 远端玩家平滑跟随
@@ -6590,9 +6795,12 @@ async function boot() {
 
   if (restoreRandom) {
     restoreRandom();                   // 世界生成完毕,恢复真随机(钓鱼/AI 等)
-    connectRoom(mpRoom);
     document.title += ' · 房间 ' + mpRoom;
   }
+
+  window.addEventListener('beforeunload', () => {
+    try { if (mp.peer) mp.peer.destroy(); } catch (_) { /* ignore */ }
+  });
 
   renderer.setAnimationLoop(tick);
 

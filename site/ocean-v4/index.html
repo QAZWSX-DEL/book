@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>无尽之海 · Procedural Ocean — WebGPU / TSL</title>
+<title>无尽之海 · Procedural Ocean</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23071420'/%3E%3Cpath d='M3 20q4-5 8 0t8 0 8 0 5-2v11H3z' fill='%233aa7a3'/%3E%3Cpath d='M3 16q4-5 8 0t8 0 8 0 5-2v6H3z' fill='%235fd4d0'/%3E%3Ccircle cx='23' cy='9' r='3.4' fill='%23ffd9a0'/%3E%3C/svg%3E">
 <style>
   :root{
@@ -76,6 +76,53 @@
     background:rgba(0,0,0,.4); color:#ffb4a8; font-size:11px; font-family:ui-monospace,Menlo,Consolas,monospace;
     white-space:pre-wrap; word-break:break-all;
   }
+
+  /* ---------- 加载后的开始 / 多人房间界面 ---------- */
+  #start-screen{
+    position:fixed; inset:0; z-index:35; padding:24px;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(100% 100% at 50% 100%,rgba(10,46,62,.82),rgba(4,8,14,.88));
+    backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    opacity:0; pointer-events:none; transition:opacity .45s ease;
+  }
+  #start-screen.show{ opacity:1; pointer-events:auto; }
+  .start-card{
+    width:min(560px,100%); max-height:calc(100vh - 48px); overflow:auto;
+    padding:32px; border:1px solid rgba(95,212,208,.24); border-radius:22px;
+    background:linear-gradient(145deg,rgba(8,21,31,.94),rgba(6,13,21,.9));
+    box-shadow:0 28px 90px rgba(0,0,0,.5),inset 0 1px rgba(255,255,255,.04);
+  }
+  .start-kicker{ font-size:10px; letter-spacing:.38em; color:var(--teal); text-transform:uppercase; }
+  .start-card h2{ margin-top:10px; font-size:30px; letter-spacing:.18em; font-weight:600; }
+  .start-lead{ margin-top:8px; font-size:12px; line-height:1.7; color:var(--dim); }
+  .start-primary,.multi-action{
+    width:100%; border:0; border-radius:12px; cursor:pointer; font-family:inherit;
+    color:#061115; background:linear-gradient(135deg,#8ce7e1,#4fc5c1);
+    box-shadow:0 10px 28px rgba(79,197,193,.18); transition:transform .2s,filter .2s;
+  }
+  .start-primary{ margin-top:24px; padding:14px 18px; font-size:14px; font-weight:700; letter-spacing:.2em; }
+  .start-primary:hover,.multi-action:hover{ transform:translateY(-1px); filter:brightness(1.08); }
+  .start-divider{ display:flex; align-items:center; gap:12px; margin:24px 0 16px; color:rgba(234,244,248,.35); font-size:9px; letter-spacing:.25em; }
+  .start-divider::before,.start-divider::after{ content:""; flex:1; height:1px; background:var(--line); }
+  .multi-card{ padding:18px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,.025); }
+  .multi-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+  .multi-head strong{ display:block; font-size:14px; letter-spacing:.15em; }
+  .multi-head span{ display:block; margin-top:5px; font-size:10px; line-height:1.6; color:var(--dim); }
+  .multi-badge{ flex:none; padding:5px 8px; border:1px solid rgba(95,212,208,.28); border-radius:999px; color:#8fe8e3!important; letter-spacing:.12em; }
+  .multi-fields{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+  .multi-field{ display:flex; flex-direction:column; gap:6px; }
+  .multi-field label{ font-size:9px; letter-spacing:.22em; color:var(--dim); }
+  .multi-field input{
+    width:100%; min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:10px;
+    outline:none; background:rgba(0,0,0,.22); color:var(--ink); font:12px ui-monospace,Menlo,monospace;
+  }
+  .multi-field input:focus{ border-color:rgba(95,212,208,.65); box-shadow:0 0 0 3px rgba(95,212,208,.08); }
+  .multi-actions{ display:grid; grid-template-columns:.8fr 1.2fr; gap:10px; margin-top:12px; }
+  .multi-action{ padding:11px 12px; font-size:11px; font-weight:700; letter-spacing:.12em; }
+  .multi-action.secondary{ color:var(--ink); border:1px solid var(--line); background:rgba(255,255,255,.055); box-shadow:none; }
+  #start-status{ min-height:18px; margin-top:12px; font-size:10px; line-height:1.7; color:#8fe8e3; }
+  #start-status.error{ color:#ff9d8f; }
+  .multi-note{ margin-top:8px; font-size:9px; line-height:1.6; color:rgba(234,244,248,.34); }
 
   /* ---------- HUD ---------- */
   #hud{
@@ -376,6 +423,10 @@
     #hud h1{ font-size:14px; letter-spacing:.38em; }
     #hud .hint{ display:none; }
     #panel{ left:18px; padding:14px 16px 12px; max-height:52vh; }
+    #start-screen{ padding:14px; }
+    .start-card{ padding:24px 20px; }
+    .start-card h2{ font-size:24px; }
+    .multi-fields,.multi-actions{ grid-template-columns:1fr; }
   }
 </style>
 </head>
@@ -388,23 +439,50 @@
   <div class="loader-mark"></div>
   <div class="loader-title">无尽之海</div>
   <div class="loader-bar"></div>
-  <div class="loader-sub" id="loading-status">正在初始化 WebGPU</div>
+  <div class="loader-sub" id="loading-status">正在初始化图形渲染器</div>
 </div>
 
 <!-- 错误界面 -->
 <div id="error">
   <div class="error-card">
     <h2>无法启动渲染器</h2>
-    <p id="error-msg">当前环境不支持 WebGPU。请使用 Chrome / Edge 113+、Safari 26+ 或最新版 Firefox,并确认已启用硬件加速。Safari 17/18 可在 开发 → 实验性功能 中开启 WebGPU。</p>
+    <p id="error-msg">当前环境无法启动 WebGPU 或 WebGL2。请使用最新版 Chrome、Edge、Safari 或 Firefox，并确认已启用硬件加速。</p>
     <code id="error-detail"></code>
+  </div>
+</div>
+
+<!-- 加载完成后进入游戏；多人房间沿用仿三角洲的“昵称 + 房间号”流程 -->
+<div id="start-screen" aria-modal="true" role="dialog" aria-labelledby="start-title">
+  <div class="start-card">
+    <div class="start-kicker">PROCEDURAL OCEAN</div>
+    <h2 id="start-title">无尽之海</h2>
+    <p class="start-lead">驾驶船只穿越风暴、潜入深海，或登上荒岛开始求生。</p>
+    <button class="start-primary" id="start-single" type="button">进入游戏</button>
+    <div class="start-divider">多人游戏</div>
+    <section class="multi-card">
+      <div class="multi-head">
+        <div><strong>好友房间</strong><span>输入相同房间号，共享同一片海域与荒岛。</span></div>
+        <span class="multi-badge">P2P 联机</span>
+      </div>
+      <div class="multi-fields">
+        <div class="multi-field"><label for="player-name">玩家昵称</label><input id="player-name" maxlength="16" autocomplete="nickname" placeholder="海上旅人"></div>
+        <div class="multi-field"><label for="room-code">房间号</label><input id="room-code" maxlength="12" inputmode="text" autocomplete="off" placeholder="例如 888888"></div>
+      </div>
+      <div class="multi-actions">
+        <button class="multi-action secondary" id="create-room" type="button">创建房间</button>
+        <button class="multi-action" id="join-room" type="button">进入多人海域</button>
+      </div>
+      <div id="start-status" aria-live="polite"></div>
+      <p class="multi-note">房主需要保持页面在线。数据通过浏览器点对点传输；不同网络首次连接可能需要数秒。</p>
+    </section>
   </div>
 </div>
 
 <!-- 标题 HUD -->
 <div id="hud">
   <h1>无尽之海</h1>
-  <div class="sub">Procedural Ocean · WebGPU · TSL</div>
-  <div class="hint">拖拽旋转 · 滚轮缩放 · 触屏双指 · 可潜入水下 · H 隐藏界面</div>
+  <div class="sub">Procedural Ocean · WebGPU / WebGL2 · TSL</div>
+  <div class="hint">移动鼠标转视角 · 滚轮缩放 · 触屏拖动 · 可潜入水下 · H 隐藏界面</div>
 </div>
 
 <!-- 控制面板 -->
@@ -516,7 +594,7 @@
   <div class="item" id="ih-bullets-item" style="display:none"><span class="k">子弹</span><span class="v" id="ih-bullets">0</span></div>
   <div class="item" id="ih-bombs-item" style="display:none"><span class="k">磁爆弹</span><span class="v" id="ih-bombs">2</span></div>
   <div class="item" id="ih-buff" style="display:none"><span class="v" style="color:#ffd76a">⚡神力</span></div>
-  <span class="keys" id="ih-hint">WASD 移动 · 拖动鼠标环顾 · E 互动 · G 吃椰子</span>
+  <span class="keys" id="ih-hint">WASD 移动 · 移动鼠标环顾 · E 互动 · G 吃椰子</span>
 </div>
 
 <!-- 第一人称准星(登岛时显示) -->
@@ -532,7 +610,7 @@
   <div class="cols">
     <div>
       <p><b>WASD</b> 移动 · <b>Shift</b> 疾跑/走路切换</p>
-      <p><b>拖动鼠标</b> 环顾 · <b>空格</b> 射箭/射击</p>
+      <p><b>移动鼠标</b> 环顾 · <b>空格</b> 射箭/射击</p>
       <p><b>4</b> 开镜/关镜(狙击滚轮调 3-7×)</p>
       <p><b>2</b> 换武器 · <b>E</b> 互动/驯服/吞噬</p>
       <p><b>V</b> 骑乘泰坦(无视距离)/上下快艇</p>
@@ -568,6 +646,8 @@
   });
 </script>
 
+<script src="./peerjs.min.js"></script>
+
 <script type="importmap">
 {
   "imports": {
@@ -577,7 +657,7 @@
   }
 }
 </script>
-<script type="module" src="./main.js?v=20260820s"></script>
+<script type="module" src="./main.js?v=20260820m"></script>
 
 </body>
 </html>
