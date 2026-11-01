@@ -8040,6 +8040,9 @@ async function boot() {
     if (!relics.tombFound || !relicSpots.tomb) return false;
     if (!relics.tombKit) return spendTombMaterials();
     if (!relics.tombDug) return startTombDig();
+    // 进入墓穴前强制解除地面炮台状态，避免 E 键被炮台交互抢占而无法出墓。
+    walker.swordTurret = null;
+    setAim(false);
     walker.inTomb = true;
     walker.x = relicSpots.tomb.x + 3.6;
     walker.z = relicSpots.tomb.z;
@@ -8875,13 +8878,13 @@ async function boot() {
   }
 
   function islandInteract() {
-    if (walker.swordTurret) {
+    if (!walker.inTomb && walker.swordTurret) {
       walker.swordTurret = null;
       setAim(false);
       showToast('离开长剑炮台');
       return;
     }
-    if (swordTurret && Math.hypot(swordTurret.x - walker.x, swordTurret.z - walker.z) < 18) {
+    if (!walker.inTomb && swordTurret && Math.hypot(swordTurret.x - walker.x, swordTurret.z - walker.z) < 18) {
       walker.swordTurret = swordTurret;
       walker.x = swordTurret.x;
       walker.z = swordTurret.z;
