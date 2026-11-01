@@ -14,9 +14,9 @@
  * ========================================================================= */
 
 import * as THREE from 'three/webgpu';
-import { OrbitControls } from './OrbitControls.js';
-import { bloom } from './BloomNode.js';
-import { mergeGeometries } from './BufferGeometryUtils.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   Fn, uniform, varying, float, vec2, vec3,
   sin, cos, dot, cross, normalize, mix, pow, max, min, clamp, smoothstep, sign,
@@ -27,9 +27,9 @@ import {
 
 /* ----------------------------- 常量与参数 ----------------------------- */
 
-const OCEAN_SIZE = 1600;
-const OCEAN_SEGMENTS = 640;   // 加密以承载浪管折叠曲面(顶点间距 2.5m)
-const SKY_RADIUS = 4000;
+const OCEAN_SIZE = 24000;
+const OCEAN_SEGMENTS = 720;   // 覆盖整片可航行海域,骑终极泰坦高空视角也不露黑边
+const SKY_RADIUS = 14000;
 const DPR_CAP = 2;
 const GULL_COUNT = 16;
 const DOLPHIN_COUNT = 4;
@@ -76,9 +76,11 @@ const uJiaolong = uniform(new THREE.Vector4(0, 0, 0, 0));  // 蛟龙号:xyz=位�
 const uLamp = uniform(0);     // 探照灯发光强度(灯体/光锥用)
 const uCampfire = uniform(new THREE.Vector4(0, 0, 0, 0));  // 篝火:xy=位置XZ z=强度 w=未用
 const uSurvival = uniform(0); // 求生虚脱程度 0..1(驱动画面暗角)
+const uHorror = uniform(0);   // 血色恐怖滤镜 0..1(全局后期)
+const uBloodEye = uniform(new THREE.Vector4(0, 0, 1, 0));  // 血色之眼:xy=海床中心 z/w=朝向 cos/sin
 
 // 水龙卷状态(CPU 侧;船只拖拽逻辑读取)
-const spoutState = { x: 0, z: 0, strength: 0 };
+const spoutState = { x: 0, z: 0, strength: 0, radius: 150, target: null, targetKind: '' };
 
 // 海啸事件状态(CPU 侧;waveHeightAt 镜像读取)
 const tsunamiState = { front: -10000, amp: 0 };
@@ -182,7 +184,7 @@ const sprayPosition = Fn(() => {
   const r2 = hash(idx.mul(7.13).add(29.7));
   const r3 = hash(idx.mul(5.47).add(47.1));
   const r4 = hash(idx.mul(9.31).add(63.9));
-  const s = r1.sub(0.5).mul(1500.0);                       // 沿波前线的位置
+  const s = r1.sub(0.5).mul(5200.0);                       // 沿波前线的位置,覆盖整片海域
   const lipShape = float(0.75).add(gnoise(vec2(s.mul(0.006), 3.71)).x.mul(0.5));
   const lipH = uTsunami.y.mul(lipShape);
   const tau = fract(uTime.mul(0.30).add(r2)).mul(3.2);     // 0..3.2s 生命
@@ -240,7 +242,10 @@ const tornadoTwist = Fn(() => {
 });
 const tornadoColor = Fn(() => {
   const lightL = float(0.14).add(max(uSunDir.y, 0.0).mul(1.2));
-  return vec3(0.46, 0.52, 0.60).mul(lightL);
+  const stormGrey = vec3(0.46, 0.52, 0.60).mul(lightL);
+  const bloodVortex = vec3(0.70, 0.025, 0.010)
+    .mul(float(0.42).add(uTornado.z.mul(0.55)));
+  return mix(stormGrey, bloodVortex, uHorror);
 });
 const tornadoOpacity = Fn(() => {
   const t01 = positionLocal.y.add(65.0).div(130.0);
@@ -389,24 +394,24 @@ const gerstnerPosition = Fn(() => {
   const tsAlong = dot(p.xz, vec2(-0.342, 0.940));               // 沿波前线坐标
   const tsShape = float(0.75).add(gnoise(vec2(tsAlong.mul(0.006), 3.71)).x.mul(0.5));
   const tsH = uTsunami.y.mul(tsShape).toVar();
-  const tsProfile = sech2(tsD.div(110.0))
-    .sub(sech2(tsD.sub(340.0).div(170.0)).mul(0.45))
-    .add(sech2(tsD.add(510.0).div(115.0)).mul(0.45))
-    .add(sech2(tsD.add(920.0).div(105.0)).mul(0.22)).toVar();
-  const tsDeriv = dSech2(tsD.div(110.0)).div(110.0)
-    .sub(dSech2(tsD.sub(340.0).div(170.0)).div(170.0).mul(0.45))
-    .add(dSech2(tsD.add(510.0).div(115.0)).div(115.0).mul(0.45))
-    .add(dSech2(tsD.add(920.0).div(105.0)).div(105.0).mul(0.22)).toVar();
+  const tsProfile = sech2(tsD.div(260.0))
+    .sub(sech2(tsD.sub(820.0).div(420.0)).mul(0.45))
+    .add(sech2(tsD.add(1180.0).div(290.0)).mul(0.45))
+    .add(sech2(tsD.add(2050.0).div(250.0)).mul(0.22)).toVar();
+  const tsDeriv = dSech2(tsD.div(260.0)).div(260.0)
+    .sub(dSech2(tsD.sub(820.0).div(420.0)).div(420.0).mul(0.45))
+    .add(dSech2(tsD.add(1180.0).div(290.0)).div(290.0).mul(0.45))
+    .add(dSech2(tsD.add(2050.0).div(250.0)).div(250.0).mul(0.22)).toVar();
   disp.y.addAssign(tsH.mul(tsProfile));
 
   // 卷浪(浪管):波唇向前抛出 + 唇口下扣 —— 截面呈"C"形翻卷。
   // 前抛强而窄(中心略偏波前后方),位移斜率超过 -1 处表面真正折叠(悬垂),
   // 折叠阈值约 tsH>44m,浪管沿波前大部分段落连续成形;shape 高的区段卷得更狠。
   // 唇口下扣项把波前前方的水面向下压 —— 浪管开口朝前、管内悬空、管腔朝前透光。
-  const tsCurl = tsH.mul(1.55).mul(sech2(tsD.add(8.0).div(52.0))).toVar();
-  const tsCurlD = tsH.mul(1.55).mul(dSech2(tsD.add(8.0).div(52.0)).div(52.0)).toVar();
-  const tsLipDrop = tsH.mul(0.42).mul(sech2(tsD.sub(40.0).div(32.0))).toVar();
-  const tsLipDropD = tsH.mul(0.42).mul(dSech2(tsD.sub(40.0).div(32.0)).div(32.0)).toVar();
+  const tsCurl = tsH.mul(1.85).mul(sech2(tsD.add(18.0).div(120.0))).toVar();
+  const tsCurlD = tsH.mul(1.85).mul(dSech2(tsD.add(18.0).div(120.0)).div(120.0)).toVar();
+  const tsLipDrop = tsH.mul(0.46).mul(sech2(tsD.sub(96.0).div(78.0))).toVar();
+  const tsLipDropD = tsH.mul(0.46).mul(dSech2(tsD.sub(96.0).div(78.0)).div(78.0)).toVar();
   disp.x.addAssign(tsCurl.mul(0.940));
   disp.z.addAssign(tsCurl.mul(0.342));
   disp.y.addAssign(tsLipDrop.negate());
@@ -502,7 +507,8 @@ const skyColor = Fn(([rawDir]) => {
   const maria = gnoise(vec2(dir.x.add(dir.z), dir.y).mul(80.0)).x.mul(0.18).add(0.88);
   const moonDisc = smoothstep(0.999500, 0.999850, moonD).mul(maria).mul(2.2);
   const moonGlow = pow(max(moonD, 0.0), 150.0).mul(0.32);
-  col.addAssign(vec3(0.82, 0.88, 1.0).mul(moonDisc.add(moonGlow)).mul(moonVis));
+  const moonCol = mix(vec3(0.82, 0.88, 1.0), vec3(1.0, 0.035, 0.010), uHorror);
+  col.addAssign(moonCol.mul(moonDisc.add(moonGlow)).mul(moonVis));
 
   // 远方岛屿剪影(isl1 方向已落成真实荒岛,只保留另一座剪影)
   const islMask = islandMask(dir, vec2(-0.42, 0.91), 16.0, 9.2, 0.038)
@@ -569,6 +575,13 @@ const skyColor = Fn(([rawDir]) => {
     .mul(smoothstep(-0.02, 0.05, dir.y))
     .mul(float(1.0).sub(gloom.mul(0.5))));
 
+  // 血色模式只改变环境:黑天 + 小范围血月晕光,不把整片天空/海雾染红。
+  const bloodMoonHalo = pow(max(moonD, 0.0), 80.0).mul(moonVis);
+  const bloodSky = vec3(0.001, 0.001, 0.005)
+    .add(vec3(0.22, 0.0, 0.0).mul(bloodMoonHalo.mul(0.58)))
+    .add(vec3(1.0, 0.025, 0.006).mul(moonDisc.mul(3.0).add(moonGlow.mul(0.30))).mul(moonVis));
+  col.assign(mix(col, bloodSky, uHorror));
+
   return col;
 });
 
@@ -621,13 +634,15 @@ const waterColor = Fn(() => {
   const sparkle = fract(mottle.mul(7.13)).mul(1.6).add(0.2);
   const specTight = pow(RdS, 1000.0).mul(40.0).mul(sparkle);
   const specWide = pow(RdS, 80.0).mul(0.55);
-  col.addAssign(sunCol.mul(specTight.add(specWide)).mul(smoothstep(-0.06, 0.02, elev)));
+  col.addAssign(sunCol.mul(specTight.add(specWide)).mul(smoothstep(-0.06, 0.02, elev)).mul(float(1.0).sub(uHorror)));
 
   // 月光波道
   const moonVis = nightF.mul(smoothstep(-0.02, 0.01, uMoonDir.y));
   const MdS = max(dot(R, uMoonDir), 0.0);
-  const moonSpec = pow(MdS, 900.0).mul(10.0).mul(sparkle).add(pow(MdS, 70.0).mul(0.18));
-  col.addAssign(vec3(0.70, 0.80, 1.0).mul(moonSpec).mul(moonVis));
+  const moonSpec = pow(MdS, 1200.0).mul(mix(13.0, 22.0, uHorror)).mul(sparkle)
+    .add(pow(MdS, 120.0).mul(mix(0.10, 0.32, uHorror)));
+  col.addAssign(mix(vec3(0.70, 0.80, 1.0), vec3(1.0, 0.025, 0.006), uHorror)
+    .mul(moonSpec).mul(moonVis));
 
   // 浪尖透光
   const scatterAmt = pow(max(dot(V, uSunDir), 0.0), 3.0).mul(pow(crest, 2.5)).mul(0.85);
@@ -651,6 +666,8 @@ const waterColor = Fn(() => {
     .mul(foamTex.mul(0.5).add(0.6))
     .mul(mix(vec3(0.55, 0.62, 0.72), sunTint, clamp(lightLevel.mul(1.4), 0.0, 1.0)))
     .mul(lightLevel.mul(0.65).add(0.45));
+  const bloodFoamCol = vec3(1.00, 0.065, 0.020)
+    .mul(foamTex.mul(0.55).add(0.75));
   // 海啸水墙的唇口卷浪:只在墙面数米高以上的区域起白沫,
   // 黑绿色的水墙本体保持阴沉 —— 遮天蔽日感来自大体积而不是全屏白
   const tsLip = smoothstep(2.5, 7.0, vTsunami);
@@ -660,7 +677,11 @@ const waterColor = Fn(() => {
   const spRing = smoothstep(30.0, 9.0, spD).mul(uTornado.z).toVar();
   const spSwirl = gnoise(vec2(spD.mul(0.22).sub(uTime.mul(2.5)), uTime.mul(0.7))).x.mul(0.5).add(0.5);
   foamMask.assign(max(foamMask, spRing.mul(spSwirl.mul(0.6).add(0.4))));
-  col.assign(mix(col, foamCol, foamMask.mul(0.85)));
+  const horrorFoamCol = mix(foamCol, bloodFoamCol, uHorror);
+  col.assign(mix(col, horrorFoamCol, foamMask.mul(0.85)));
+  // 血色模式加强动态红色:普通浪尖略红,海啸浪唇和水龙卷泡沫环更明显。
+  const bloodEdge = foamMask.mul(0.18).add(tsLip.mul(0.85)).add(spRing.mul(0.65));
+  col.addAssign(vec3(0.95, 0.020, 0.006).mul(bloodEdge).mul(uHorror));
 
   // 浪管内侧压暗(法线翻下/背光处 → 黑洞洞的浪管),
   // 浪唇透光(逆光时墙顶泛出半透明青绿 —— 巨浪的"玻璃质感")
@@ -670,10 +691,19 @@ const waterColor = Fn(() => {
   // 管口透光:顺着传播方向看进浪管时,管腔深处泛出幽绿微光(光从管口灌入)
   const tubeView = pow(max(dot(V, vec3(0.940, 0.0, 0.342)), 0.0), 3.0);
   const tubeGlow = barrelF.mul(tubeView).mul(smoothstep(6.0, 20.0, vTsunami));
-  col.addAssign(vec3(0.02, 0.22, 0.20).mul(tubeGlow).mul(lightLevel));
+  col.addAssign(mix(vec3(0.02, 0.22, 0.20), vec3(0.95, 0.030, 0.010), uHorror)
+    .mul(tubeGlow).mul(lightLevel.add(uHorror.mul(0.45))));
   const lipGlow = smoothstep(8.0, 24.0, vTsunami)
     .mul(pow(max(dot(V, uSunDir), 0.0), 2.0));
-  col.addAssign(vec3(0.05, 0.45, 0.40).mul(lipGlow).mul(lightLevel).mul(0.8));
+  col.addAssign(mix(vec3(0.05, 0.45, 0.40), vec3(1.0, 0.040, 0.012), uHorror)
+    .mul(lipGlow).mul(lightLevel.add(uHorror.mul(0.55))).mul(0.8));
+
+  // 血色之海:暗血底色 + 红色浪峰/泡沫/巨浪/水龙卷反光,保留黑色暗部层次。
+  const bloodSeaBase = col.mul(vec3(0.30, 0.085, 0.075))
+    .add(vec3(0.16, 0.003, 0.002).mul(crest.mul(0.65).add(0.18)));
+  const bloodSeaGlint = vec3(1.0, 0.018, 0.004)
+    .mul(foamMask.mul(0.24).add(tsLip.mul(0.90)).add(spRing.mul(0.72)).add(moonSpec.mul(moonVis).mul(0.028)));
+  col.assign(mix(col, bloodSeaBase.add(bloodSeaGlint), uHorror.mul(0.88)));
 
   // 夜光藻
   const bioMask = smoothstep(0.55, 0.78, crest.mul(0.30).add(foamN.mul(0.62)).add(patch.mul(0.28)));
@@ -693,7 +723,10 @@ const waterColor = Fn(() => {
     .mul(lightLevel.add(0.15))
     .mul(depthFade.add(0.25))
     .add(bioCol.mul(bioMask.mul(nightF).mul(uGlow).mul(0.5)));
-  col.assign(mix(col, underCol, uUnderwater));
+  const bloodUnderCol = underCol.mul(vec3(0.50, 0.18, 0.16))
+    .add(vec3(0.22, 0.018, 0.010).mul(upness.mul(0.75).add(0.25)))
+    .add(vec3(0.35, 0.020, 0.006).mul(bioMask.mul(0.16)));
+  col.assign(mix(col, mix(underCol, bloodUnderCol, uHorror), uUnderwater));
 
   // 地平线雾化(水下关闭)
   const fogF = smoothstep(250.0, 700.0, dist).mul(float(1.0).sub(uUnderwater));
@@ -732,6 +765,31 @@ const seafloorColor = Fn(() => {
   const col = sand.mul(sunTint).mul(lightLevel).toVar();
   col.addAssign(vec3(0.45, 0.85, 0.85).mul(caustic).mul(lightLevel));
 
+  // 血色模式:海床上浮现一只凝视相机的巨大眼睛,血丝随水流轻微扭动。
+  const eyeRel = wpos.xz.sub(uBloodEye.xy);
+  const eyeP = vec2(
+    eyeRel.x.mul(uBloodEye.z).add(eyeRel.y.mul(uBloodEye.w)),
+    eyeRel.y.mul(uBloodEye.z).sub(eyeRel.x.mul(uBloodEye.w))
+  );
+  const eyeQ = vec2(eyeP.x.div(56.0), eyeP.y.div(24.0));
+  const eyeR = length(eyeQ);
+  const eyeMask = smoothstep(1.0, 0.88, eyeR).mul(uHorror).toVar();
+  const irisR = length(vec2(eyeP.x.div(11.0), eyeP.y.div(11.0)));
+  const irisMask = smoothstep(1.0, 0.58, irisR).mul(eyeMask);
+  const pupilMask = smoothstep(0.42, 0.24, irisR).mul(eyeMask);
+  const irisRing = smoothstep(0.98, 0.72, irisR).sub(smoothstep(0.58, 0.42, irisR)).mul(eyeMask);
+  const veinNoise = fbm3(eyeP.mul(0.075).add(vec2(uTime.mul(0.020), uTime.mul(-0.015))));
+  const veinA = smoothstep(0.080, 0.0, abs(sin(eyeP.x.mul(0.31).add(veinNoise.mul(5.2)))));
+  const veinB = smoothstep(0.055, 0.0, abs(sin(eyeP.y.mul(0.43).add(eyeP.x.mul(0.10)).add(veinNoise.mul(7.1)))));
+  const veinMask = max(veinA.mul(0.55), veinB.mul(0.75)).mul(eyeMask).mul(float(1.0).sub(irisMask.mul(0.80)));
+  const sclera = vec3(0.52, 0.42, 0.34).mul(eyeMask);
+  const iris = vec3(0.55, 0.02, 0.012).mul(irisMask)
+    .add(vec3(1.0, 0.07, 0.02).mul(irisRing.mul(0.55)));
+  const pupil = vec3(0.002, 0.0, 0.0).mul(pupilMask);
+  const veins = vec3(1.0, 0.0, 0.0).mul(veinMask.mul(0.90));
+  col.assign(mix(col, sclera.add(iris).add(veins), eyeMask.mul(0.82)));
+  col.assign(mix(col, pupil.add(vec3(0.18, 0.0, 0.0).mul(irisMask)), pupilMask));
+
   // 蛟龙号探照灯:潜水器正下方照亮一圈暖色光池(深海里唯一的人工光)
   // 深度越深光池相对越亮(环境光已被吸收)
   const jiaoD = length(wpos.xz.sub(vec2(uJiaolong.x, uJiaolong.z)));
@@ -742,7 +800,7 @@ const seafloorColor = Fn(() => {
 
   // 距离雾:向深蓝收拢;水上俯视时整体压暗(海 mesh 边缘外读作深渊)
   const fogF = smoothstep(15.0, 95.0, dist);
-  col.assign(mix(col, vec3(0.010, 0.055, 0.075), fogF));
+  col.assign(mix(col, mix(vec3(0.010, 0.055, 0.075), vec3(0.075, 0.010, 0.008), uHorror), fogF));
   col.mulAssign(float(0.05).add(uUnderwater.mul(0.95)));
   return col;
 });
@@ -813,6 +871,21 @@ const orcaBaseColor = Fn(() => {
     length(vec2(ax.sub(0.42).mul(1.6), y.sub(0.45))))
     .mul(smoothstep(1.8, 2.4, z)).mul(smoothstep(3.6, 3.0, z));
   return mix(vec3(0.020, 0.026, 0.034), vec3(0.80, 0.84, 0.88), max(belly, eyePatch));
+});
+
+// 终极泰坦:吞噬 4 种不同泰坦后白化,身上浮现四套不同方向的纹路
+const ultimateTitanSkin = Fn(() => {
+  const p = positionLocal;
+  const base = vec3(0.92, 0.95, 0.94).toVar();
+  const stripeA = smoothstep(0.94, 1.0, sin(p.z.mul(1.7).add(p.x.mul(0.45))).mul(0.5).add(0.5));
+  const stripeB = smoothstep(0.95, 1.0, sin(p.z.mul(2.3).sub(p.y.mul(3.2)).add(1.4)).mul(0.5).add(0.5));
+  const stripeC = smoothstep(0.955, 1.0, sin(p.x.mul(3.1).add(p.y.mul(2.1)).sub(0.6)).mul(0.5).add(0.5));
+  const stripeD = smoothstep(0.96, 1.0, sin(length(p.xz).mul(2.0).add(p.y.mul(1.4))).mul(0.5).add(0.5));
+  base.assign(mix(base, vec3(0.10, 0.46, 0.95), stripeA.mul(0.52)));
+  base.assign(mix(base, vec3(0.95, 0.18, 0.12), stripeB.mul(0.48)));
+  base.assign(mix(base, vec3(0.12, 0.72, 0.34), stripeC.mul(0.44)));
+  base.assign(mix(base, vec3(0.88, 0.66, 0.10), stripeD.mul(0.40)));
+  return marineSkin(base);
 });
 
 // 蛟龙号涂装:白色耐压壳体 + 橙色上部整流罩 + 前部黑色观察窗带 + 灰色尾段
@@ -1029,6 +1102,7 @@ const BOAT_SPECS = {
   sail:  { vmax: 5.5, accel: 0.5, brake: 0.8, turnRate: 0.32, L: 9.0, B: 3.0, draft: 0.0 },
   speed: { vmax: 26.0, accel: 2.4, brake: 3.2, turnRate: 0.40, L: 10.0, B: 2.6, draft: 0.0, plane: true },
 };
+const PLAYER_HP_MAX = 200;
 
 function stepBoatDynamics(b, inp, dt) {
   const spec = BOAT_SPECS[b.kind];
@@ -1148,7 +1222,17 @@ function islandHeightAt(x, z) {
 }
 
 // 另一块海域:更大的荒岛(岛上有野人),骑融合泰坦横渡深海才能到达
-const NEW_ISLAND = { x: -460, z: -430, R: 280 };
+const NEW_ISLAND = { x: -720, z: -680, R: 360 };
+const THIRD_ISLAND = { x: -1180, z: -220, R: 165, name: '石牙远岛', form: 'concave' };
+const FOURTH_ISLAND = { x: -260, z: -1220, R: 165, name: '雾叶远岛', form: 'convex' };
+function newIslandRiverMetrics(x, z) {
+  const nx = (x - NEW_ISLAND.x) / NEW_ISLAND.R;
+  const nz = (z - NEW_ISLAND.z) / NEW_ISLAND.R;
+  const curve = -0.12 + Math.sin((nz + 0.70) * 2.45) * 0.18 + Math.sin((nz + 0.70) * 8.2) * 0.045;
+  const edgeIn = Math.max(0, Math.min(1, (nz + 0.82) / 0.18));
+  const edgeOut = Math.max(0, Math.min(1, (0.88 - nz) / 0.18));
+  return { lateral: Math.abs(nx - curve) * NEW_ISLAND.R, gate: edgeIn * edgeOut, curve };
+}
 function newIslandHeightAt(x, z) {
   const dx = x - NEW_ISLAND.x, dz = z - NEW_ISLAND.z;
   const d = Math.hypot(dx, dz) / (NEW_ISLAND.R * 1.35);
@@ -1156,11 +1240,109 @@ function newIslandHeightAt(x, z) {
   const t = 1 - d * d;
   const rough = 0.70 + 0.46 * fbmJS(x * 0.009 + 71.1, z * 0.009 + 23.9);
   const detail = fbmJS(x * 0.05 + 3.3, z * 0.05 - 8.8) * 2.2;
-  return -30 + Math.pow(t, 1.5) * 96 * rough + detail * Math.min(1, t * 2);
+  let h = -30 + Math.pow(t, 1.5) * 96 * rough + detail * Math.min(1, t * 2);
+  // 第二岛固定河谷:从雨林高地蜿蜒切到海边,让地形本身出现可读的溪谷。
+  const river = newIslandRiverMetrics(x, z);
+  const cut = Math.exp(-(river.lateral * river.lateral) / (15 * 15)) * river.gate;
+  h -= cut * (10 + 10 * Math.min(1, t * 1.5));
+  return h;
+}
+function newIslandWallPoint(i) {
+  const u = i / 33;
+  const x = NEW_ISLAND.x - 175 + u * 350;
+  const z = NEW_ISLAND.z - 82 + Math.sin(u * Math.PI * 1.35) * 46 + Math.sin(u * Math.PI * 5.0) * 10;
+  return { x, z, h: newIslandHeightAt(x, z) };
+}
+function newIslandGreatWallHighPoint() {
+  return [2, 16, 31].map(i => newIslandWallPoint(i)).sort((a, b) => b.h - a.h)[0];
+}
+const GREAT_WALL_SAVAGE_KEEP_OUT = 46;
+function keepSavageOutOfGreatWall(x, z) {
+  const high = newIslandGreatWallHighPoint();
+  const dx = x - high.x, dz = z - high.z;
+  const d = Math.hypot(dx, dz) || 1;
+  if (d >= GREAT_WALL_SAVAGE_KEEP_OUT) return { x, z };
+  const k = GREAT_WALL_SAVAGE_KEEP_OUT / d;
+  return { x: high.x + dx * k, z: high.z + dz * k };
+}
+function distToSegment2D(px, pz, ax, az, bx, bz) {
+  const vx = bx - ax, vz = bz - az;
+  const wx = px - ax, wz = pz - az;
+  const c = Math.max(0, Math.min(1, (wx * vx + wz * vz) / Math.max(0.0001, vx * vx + vz * vz)));
+  const x = ax + vx * c, z = az + vz * c;
+  return { d: Math.hypot(px - x, pz - z), t: c };
+}
+function newIslandGreatWallRampInfo() {
+  const high = newIslandGreatWallHighPoint();
+  const vx = NEW_ISLAND.x - high.x, vz = NEW_ISLAND.z - high.z;
+  const len = Math.hypot(vx, vz) || 1;
+  const dx = vx / len, dz = vz / len;
+  const start = { x: high.x + dx * 48, z: high.z + dz * 48 };
+  const end = { x: high.x + dx * 6, z: high.z + dz * 6 };
+  return { start, end, top: high.h + 15.8, width: 8.4, collisionWidth: 0 };
+}
+function newIslandGreatWallHeightAt(x, z) {
+  let h = -30;
+  const ramp = newIslandGreatWallRampInfo();
+  const rhit = distToSegment2D(x, z, ramp.start.x, ramp.start.z, ramp.end.x, ramp.end.z);
+  if (rhit.d < ramp.collisionWidth) {
+    const base = newIslandHeightAt(ramp.start.x, ramp.start.z);
+    const shoulder = newIslandHeightAt(x, z);
+    const rt = Math.max(0, Math.min(1, rhit.t));
+    const crown = base + (ramp.top - base) * (rt * rt * (3 - 2 * rt));
+    const edge = 1 - Math.max(0, rhit.d - ramp.collisionWidth * 0.72) / (ramp.collisionWidth * 0.28);
+    h = Math.max(h, shoulder + (crown - shoulder) * Math.max(0, Math.min(1, edge)));
+  }
+  const towerIdx = [2, 16, 31];
+  for (const idx of towerIdx) {
+    const p = newIslandWallPoint(idx);
+    const d = Math.hypot(x - p.x, z - p.z);
+    const top = p.h + 15.8;
+    if (d < 12.2) h = Math.max(h, top);
+    else if (d < 30) h = Math.max(h, newIslandHeightAt(x, z) + (top - newIslandHeightAt(x, z)) * (1 - (d - 12.2) / 17.8));
+  }
+  for (let i = 0; i < 33; i++) {
+    if (i === 11 || i === 12 || i === 23) continue;
+    const a = newIslandWallPoint(i), b = newIslandWallPoint(i + 1);
+    const hit = distToSegment2D(x, z, a.x, a.z, b.x, b.z);
+    if (hit.d < 3.2) {
+      const baseH = a.h + (b.h - a.h) * hit.t;
+      h = Math.max(h, baseH + 8.4);
+    }
+  }
+  return h;
+}
+function remoteIslandHeightAt(isle, x, z) {
+  const dx = x - isle.x, dz = z - isle.z;
+  const d = Math.hypot(dx, dz) / (isle.R * 1.28);
+  if (d >= 1) return -30;
+  const t = 1 - d * d;
+  const nx = dx / isle.R, nz = dz / isle.R;
+  const rough = 0.66 + 0.35 * fbmJS(x * 0.013 + isle.x * 0.01, z * 0.013 + isle.z * 0.01);
+  let h = -30 + Math.pow(t, 1.45) * 58 * rough + fbmJS(x * 0.06, z * 0.06) * 1.3;
+  if (isle.form === 'concave') {
+    // 凹岛:中部被掏成裂湾,东侧留出缺口;外缘抬成环状断崖。
+    const bowl = Math.exp(-((nx + 0.05) * (nx + 0.05) / 0.18 + nz * nz / 0.40));
+    const cleft = Math.exp(-((nx - 0.56) * (nx - 0.56) / 0.035 + nz * nz / 0.16));
+    const rim = Math.exp(-Math.pow(Math.hypot(nx, nz) - 0.72, 2) / 0.022);
+    h += rim * 21 - bowl * 34 - cleft * 42;
+  } else if (isle.form === 'convex') {
+    // 凸岛:西侧伸出石崖楔块,形状与凹岛裂湾呼应;岛心向上鼓成脊背。
+    const plug = Math.exp(-((nx + 0.58) * (nx + 0.58) / 0.045 + nz * nz / 0.16));
+    const spine = Math.exp(-(nx * nx / 0.22 + nz * nz / 0.50));
+    const cutBack = Math.exp(-((nx - 0.48) * (nx - 0.48) / 0.09 + nz * nz / 0.45));
+    h += plug * 48 + spine * 24 - cutBack * 12;
+  }
+  return h;
 }
 // 脚下的地面:两座岛取高者(行走/落水判定统一走这里)
 function groundHeightAt(x, z) {
-  return Math.max(islandHeightAt(x, z), newIslandHeightAt(x, z));
+  return Math.max(
+    islandHeightAt(x, z),
+    newIslandHeightAt(x, z),
+    newIslandGreatWallHeightAt(x, z),
+    remoteIslandHeightAt(THIRD_ISLAND, x, z),
+    remoteIslandHeightAt(FOURTH_ISLAND, x, z));
 }
 
 /* 地形着色:沙/草/岩按高度坡度分带(噪声打碎边界)+ 日光漫射 + 云影
@@ -1190,6 +1372,12 @@ const islandTerrainColor = Fn(() => {
   const base = mix(sandCol, grassCol, grassM).toVar();
   base.assign(mix(base, rockCol, rockM));
   base.assign(mix(base, vec3(0.22, 0.24, 0.20), underM));
+  const bloodIslandBase = mix(
+    mix(vec3(0.25, 0.018, 0.012), vec3(0.48, 0.030, 0.016), grassM),
+    vec3(0.12, 0.012, 0.010),
+    rockM.mul(0.72)
+  );
+  base.assign(mix(base, bloodIslandBase, uHorror.mul(0.82)));
 
   // 日光漫射 + 烘焙 AO(谷地/树荫压暗)+ 云影(随风漂移的大块阴影)
   const ao = attribute('aAO');
@@ -1206,6 +1394,8 @@ const islandTerrainColor = Fn(() => {
   const wetM = smoothstep(0.75, 0.15, h).mul(smoothstep(-0.6, -0.1, h));
   const spec = pow(max(dot(reflect(V.negate(), N), uSunDir), 0.0), 42.0);
   col.addAssign(sunTint.mul(spec.mul(wetM).mul(lightLevel).mul(0.9)));
+  col.addAssign(vec3(0.55, 0.010, 0.004)
+    .mul(uHorror).mul(diffuse).mul(float(0.10).add(wetM.mul(0.75))));
   // 篝火暖光:夜间岛上唯一的人工光,带火焰闪烁
   const fireD = length(wpos.xz.sub(vec2(uCampfire.x, uCampfire.y)));
   const flick = gnoise(vec2(uTime.mul(2.6), 7.3)).x.mul(0.3).add(0.9);
@@ -1216,6 +1406,29 @@ const islandTerrainColor = Fn(() => {
   col.assign(mix(col, skyColor(wpos.sub(cameraPosition)),
     smoothstep(160.0, 850.0, dist).mul(0.85)));
   return col;
+});
+
+const canalWaterColor = Fn(() => {
+  const wpos = positionWorld;
+  const V = normalize(cameraPosition.sub(wpos));
+  const w = dayWeights(uSunDir.y);
+  const nightF = w.x, duskF = w.y, dayF = w.z;
+  const ripple = gnoise(vec2(wpos.x.mul(0.075).add(uTime.mul(0.18)), wpos.z.mul(0.075).sub(uTime.mul(0.13)))).x
+    .add(gnoise(vec2(wpos.x.mul(0.21).sub(uTime.mul(0.33)), wpos.z.mul(0.21).add(4.7))).x.mul(0.35));
+  const deep = vec3(0.025, 0.17, 0.21);
+  const jade = vec3(0.06, 0.48, 0.52);
+  const sky = mix(vec3(0.03, 0.06, 0.12), mix(vec3(0.75, 0.42, 0.24), vec3(0.42, 0.78, 0.92), dayF), duskF.add(dayF));
+  const fresnel = pow(float(1.0).sub(max(dot(V, vec3(0.0, 1.0, 0.0)), 0.0)), 3.0);
+  const N = normalize(vec3(ripple.mul(0.07), 1.0, ripple.mul(0.045)));
+  const spec = pow(max(dot(reflect(V.negate(), N), uSunDir), 0.0), 96.0)
+    .mul(smoothstep(-0.04, 0.12, uSunDir.y));
+  const caustic = sin(wpos.x.mul(0.55).add(wpos.z.mul(0.37)).add(uTime.mul(1.8))).mul(0.5).add(0.5)
+    .mul(sin(wpos.x.mul(-0.32).add(wpos.z.mul(0.62)).sub(uTime.mul(1.35))).mul(0.5).add(0.5));
+  return mix(deep, jade, float(0.45).add(ripple.mul(0.18))).mul(float(0.46).add(dayF.mul(0.58)).add(duskF.mul(0.18)))
+    .add(sky.mul(fresnel.mul(0.62)))
+    .add(vec3(0.45, 0.95, 0.92).mul(caustic.mul(0.11).mul(dayF)))
+    .add(vec3(1.0, 0.82, 0.58).mul(spec.mul(1.35)))
+    .mul(float(1.0).sub(nightF.mul(0.46)));
 });
 
 /* 棕榈着色:树干/叶片分色(uv.x 作掩码)+ 叶片逆光透光 + 篝火暖光 */
@@ -1343,6 +1556,103 @@ function createCanopyTreeGeometry() {
   blob(1.3, 4.7, 0.6, 1.4);    // 侧冠
   blob(-1.1, 4.9, -0.7, 1.5);
   blob(0.2, 6.9, -0.3, 1.3);   // 顶冠
+  const merged = mergeGeometries(parts, false);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// 板根巨树:热带雨林高大乔木,底部有外张板根,树冠高而疏(uv.x: 0 干 1 叶)
+function createButtressTreeGeometry() {
+  const parts = [];
+  const setMask = (geo, m) => {
+    const uvA = geo.attributes.uv;
+    for (let i = 0; i < uvA.count; i++) uvA.setX(i, m);
+    return geo;
+  };
+  const trunk = new THREE.CylinderGeometry(0.24, 0.42, 8.6, 9);
+  trunk.translate(0, 4.3, 0);
+  parts.push(setMask(trunk, 0));
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const root = new THREE.BoxGeometry(0.18, 1.7, 2.8);
+    root.translate(0, 0.85, 1.15);
+    root.rotateX(-0.18);
+    root.rotateY(a);
+    parts.push(setMask(root, 0));
+  }
+  const crown = (x, y, z, sx, sy, sz) => {
+    const g = new THREE.SphereGeometry(1, 14, 10);
+    g.scale(sx, sy, sz);
+    g.translate(x, y, z);
+    parts.push(setMask(g, 1));
+  };
+  crown(0, 9.2, 0, 2.7, 1.45, 2.5);
+  crown(1.8, 8.2, -0.4, 1.8, 1.05, 1.8);
+  crown(-1.6, 8.4, 0.6, 1.9, 1.10, 1.7);
+  const merged = mergeGeometries(parts, false);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// 榕树:低而宽的伞冠 + 多条气根,适合第二岛村落和河边(uv.x: 0 干 1 叶)
+function createBanyanTreeGeometry() {
+  const parts = [];
+  const setMask = (geo, m) => {
+    const uvA = geo.attributes.uv;
+    for (let i = 0; i < uvA.count; i++) uvA.setX(i, m);
+    return geo;
+  };
+  const trunk = new THREE.CylinderGeometry(0.22, 0.34, 4.8, 9);
+  trunk.translate(0, 2.4, 0);
+  parts.push(setMask(trunk, 0));
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2;
+    const r = 1.2 + (i % 3) * 0.55;
+    const root = new THREE.CylinderGeometry(0.035, 0.055, 3.4, 6);
+    root.translate(Math.cos(a) * r, 2.0, Math.sin(a) * r);
+    parts.push(setMask(root, 0));
+  }
+  const canopy = new THREE.SphereGeometry(1, 16, 10);
+  canopy.scale(3.4, 1.25, 3.2);
+  canopy.translate(0, 5.2, 0);
+  parts.push(setMask(canopy, 1));
+  for (const [x, z, s] of [[2.1, 0.8, 1.2], [-2.0, -0.6, 1.15], [0.4, -2.0, 1.05]]) {
+    const g = new THREE.SphereGeometry(1, 12, 8);
+    g.scale(s * 1.7, s * 0.8, s * 1.5);
+    g.translate(x, 4.6, z);
+    parts.push(setMask(g, 1));
+  }
+  const merged = mergeGeometries(parts, false);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// 桫椤蕨树:细干 + 放射蕨叶,补足雨林下层轮廓(uv.x: 0 干 1 叶)
+function createTreeFernGeometry() {
+  const parts = [];
+  const setMask = (geo, m) => {
+    const uvA = geo.attributes.uv;
+    for (let i = 0; i < uvA.count; i++) uvA.setX(i, m);
+    return geo;
+  };
+  const trunk = new THREE.CylinderGeometry(0.10, 0.15, 3.3, 7);
+  trunk.translate(0, 1.65, 0);
+  parts.push(setMask(trunk, 0));
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const frond = new THREE.BoxGeometry(0.22, 0.018, 2.5, 1, 1, 5);
+    const p = frond.attributes.position;
+    for (let v = 0; v < p.count; v++) {
+      const k = (p.getZ(v) + 1.25) / 2.5;
+      p.setY(v, p.getY(v) - k * k * 0.65 + k * 0.18);
+      p.setX(v, p.getX(v) * (1 - k * 0.55));
+    }
+    frond.translate(0, 0, 1.15);
+    frond.rotateX(-0.18);
+    frond.rotateY(a);
+    frond.translate(0, 3.45, 0);
+    parts.push(setMask(frond, 1));
+  }
   const merged = mergeGeometries(parts, false);
   merged.computeVertexNormals();
   return merged;
@@ -1526,6 +1836,47 @@ function createBowGeometry() {
   add(new THREE.BoxGeometry(0.020, 0.42, 0.030), 0, -0.35, -0.035, 0.16);           // 下弓臂
   add(new THREE.BoxGeometry(0.016, 0.16, 0.024), 0, -0.585, -0.095, 0.55);          // 下弓梢
   add(new THREE.BoxGeometry(0.004, 1.13, 0.004), 0, 0, 0.035, 0);                   // 弓弦
+  const merged = mergeGeometries(parts, false);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// 野人长矛:削尖木杆 + 石质矛头(沿 +Z,投掷/持握共用)
+function createSpearGeometry() {
+  const parts = [];
+  const shaft = new THREE.CylinderGeometry(0.014, 0.018, 1.25, 7);
+  shaft.rotateX(Math.PI / 2);
+  shaft.translate(0, 0, 0.02);
+  parts.push(shaft);
+  const head = new THREE.ConeGeometry(0.045, 0.18, 7);
+  head.rotateX(Math.PI / 2);
+  head.translate(0, 0, 0.72);
+  parts.push(head);
+  const lash = new THREE.CylinderGeometry(0.024, 0.024, 0.05, 6);
+  lash.rotateX(Math.PI / 2);
+  lash.translate(0, 0, 0.61);
+  parts.push(lash);
+  const merged = mergeGeometries(parts, false);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// 野人投石机:小型皮索投石器/杠杆架,获得后用石块发射巨石
+function createCatapultGeometry() {
+  const parts = [];
+  const add = (geo, px, py, pz, rx, ry, rz, sx, sy, sz) => {
+    geo.scale(sx, sy, sz);
+    if (rz) geo.rotateZ(rz);
+    if (ry) geo.rotateY(ry);
+    if (rx) geo.rotateX(rx);
+    geo.translate(px, py, pz);
+    parts.push(geo);
+  };
+  add(new THREE.BoxGeometry(0.42, 0.045, 0.16), 0, -0.04, -0.10, 0, 0, 0, 1, 1, 1); // 横梁
+  add(new THREE.CylinderGeometry(0.014, 0.018, 0.72, 6), 0, 0.08, 0.16, -0.70, 0, 0, 1, 1, 1); // 抛臂
+  add(new THREE.SphereGeometry(0.07, 8, 6), 0, 0.31, 0.43, 0, 0, 0, 1.0, 0.45, 1.0); // 石兜
+  add(new THREE.CylinderGeometry(0.012, 0.012, 0.38, 5), -0.18, -0.19, -0.10, 0, 0, -0.35, 1, 1, 1);
+  add(new THREE.CylinderGeometry(0.012, 0.012, 0.38, 5), 0.18, -0.19, -0.10, 0, 0, 0.35, 1, 1, 1);
   const merged = mergeGeometries(parts, false);
   merged.computeVertexNormals();
   return merged;
@@ -1785,8 +2136,8 @@ function waveHeightAt(x, z, t, seaStateEff) {
     const shape = 0.75 + gnoiseValueJS(along * 0.006, 3.71) * 0.5;
     const s2 = (v) => { const u = Math.exp(-Math.abs(v)); const u2 = u * u; return 4 * u2 / ((1 + u2) * (1 + u2)); };
     y += tsunamiState.amp * shape * (
-      s2(d / 110) - 0.45 * s2((d - 340) / 170) + 0.45 * s2((d + 510) / 115) + 0.22 * s2((d + 920) / 105)
-      - 0.42 * s2((d - 40) / 32)   // 唇口下扣(与着色器一致)
+      s2(d / 260) - 0.45 * s2((d - 820) / 420) + 0.45 * s2((d + 1180) / 290) + 0.22 * s2((d + 2050) / 250)
+      - 0.46 * s2((d - 96) / 78)   // 唇口下扣(与着色器一致)
     );
   }
   return y;
@@ -1886,8 +2237,7 @@ function syncTodUI() {
 
 async function boot() {
   // 联机:房间号即世界种子 —— 同号好友生成同一片海域与同一座荒岛
-  const pageParams = new URLSearchParams(location.search);
-  const mpRoom = pageParams.get('room');
+  const mpRoom = new URLSearchParams(location.search).get('room');
   let restoreRandom = null;
   if (mpRoom) {
     let hs = 2166136261 >>> 0;
@@ -1903,20 +2253,50 @@ async function boot() {
     };
     restoreRandom = () => { Math.random = origRandom; };
   }
-  // --- WebGPU 优先,WebGL2 自动兼容回退 ---
-  // WebGPURenderer 自带 WebGL2 后端。旧版代码在 navigator.gpu 不存在时
-  // 直接终止,导致大量手机、Safari 和关闭硬件加速的浏览器无法进入。
+  // --- WebGPU 能力检测(三级:API → 适配器 → 画布上下文) ---
+  if (!navigator.gpu) {
+    window.__oceanError(
+      '当前浏览器不支持 WebGPU。请使用 Chrome / Edge 113+、Safari 26+ 或最新版 Firefox;Safari 17/18 需在 开发 → 实验性功能 中手动开启 WebGPU。',
+      'navigator.gpu is undefined'
+    );
+    return;
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      window.__oceanError(
+        '浏览器有 WebGPU 接口,但拿不到 GPU 适配器。请确认系统显卡驱动正常、浏览器"硬件加速"已开启,然后完全退出浏览器重试。',
+        'navigator.gpu.requestAdapter() 返回 null'
+      );
+      return;
+    }
+  } catch (err) {
+    window.__oceanError('WebGPU 适配器请求失败。', err && err.message);
+    return;
+  }
+
+  $('loading-status').textContent = '正在初始化 WebGPU 渲染器';
+
   const canvas = $('scene');
-  const forceWebGL = pageParams.get('renderer') === 'webgl' || !navigator.gpu;
-  $('loading-status').textContent = forceWebGL
-    ? '正在初始化 WebGL2 兼容渲染器'
-    : '正在初始化 WebGPU 渲染器';
+  // 预检:部分浏览器(套壳 Chromium 等)暴露了 navigator.gpu,
+  // 但 canvas.getContext('webgpu') 返回 null —— three 内部会对 null
+  // 直接 .configure() 抛出 TypeError。提前检出并给出明确指引,
+  // 同时把自建 context 传给渲染器,避免二次创建。
+  let gpuContext = null;
+  try { gpuContext = canvas.getContext ? canvas.getContext('webgpu') : null; } catch (_) { gpuContext = null; }
+  if (!gpuContext) {
+    window.__oceanError(
+      '当前浏览器无法创建 WebGPU 画布上下文。请换用 Chrome / Edge 113+ 或 Safari 26+;若已经是,请在设置里开启"硬件加速 / 图形加速"后重启浏览器再试。',
+      "canvas.getContext('webgpu') 返回 null"
+    );
+    return;
+  }
 
   let renderer;
   try {
-    renderer = new THREE.WebGPURenderer({ canvas, antialias: true, forceWebGL });
+    renderer = new THREE.WebGPURenderer({ canvas, context: gpuContext, antialias: true });
   } catch (err) {
-    window.__oceanError('图形渲染器创建失败。请换用最新版 Chrome、Edge、Safari 或 Firefox。', err && err.message);
+    window.__oceanError('WebGPU 渲染器创建失败,请换用 Chrome / Edge 113+ 或 Safari 26+。', err && err.message);
     return;
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, DPR_CAP));
@@ -1927,17 +2307,14 @@ async function boot() {
   try {
     await renderer.init();
   } catch (err) {
-    window.__oceanError('无法启动 WebGPU 或 WebGL2。请更新浏览器并确认硬件加速已开启。', err && err.message);
+    window.__oceanError('WebGPU 设备初始化失败,请确认 GPU 可用且未禁用硬件加速。', err && err.message);
     return;
   }
-  $('loading-status').textContent = renderer.backend && renderer.backend.isWebGLBackend
-    ? 'WebGL2 兼容模式已启用'
-    : 'WebGPU 已启用';
 
   // --- 场景与相机 ---
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(
-    55, window.innerWidth / window.innerHeight, 0.5, 6000
+    55, window.innerWidth / window.innerHeight, 0.5, 26000
   );
   camera.position.set(46, 14, 62);
 
@@ -2470,16 +2847,16 @@ async function boot() {
       if (slope > 1.6) continue;
       palmData.push({ x, z, y: h, nuts: 1 + Math.floor(Math.random() * 3), regrowT: 0 });
     }
-    // 新岛也长满棕榈(更大更野,同样可砍可摘)
+    // 新岛雨林外缘:棕榈明显加密,形成从海滩到林线的热带植被带。
     guard = 0;
-    while (palmData.length < 42 + 46 && guard++ < 5000) {
+    while (palmData.length < 42 + 240 && guard++ < 22000) {
       const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * NEW_ISLAND.R * 0.8;
+      const r = Math.sqrt(Math.random()) * NEW_ISLAND.R * 0.88;
       const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
       const h = newIslandHeightAt(x, z);
-      if (h < 1.8 || h > 20) continue;
+      if (h < 1.2 || h > 24) continue;
       const slope = Math.abs(newIslandHeightAt(x + 2, z) - h) + Math.abs(newIslandHeightAt(x, z + 2) - h);
-      if (slope > 1.8) continue;
+      if (slope > 2.2) continue;
       palmData.push({ x, z, y: h, nuts: 1 + Math.floor(Math.random() * 3), regrowT: 0 });
     }
   }
@@ -2496,18 +2873,38 @@ async function boot() {
       if (slope > 2.2) continue;
       canopyData.push({ x, z, y: h });
     }
-    // 新岛内陆的阔叶密林
+    // 新岛内陆的阔叶雨林:密度大幅提高,远看是一整片连续树冠。
     guard = 0;
-    while (canopyData.length < 55 + 64 && guard++ < 6000) {
+    while (canopyData.length < 55 + 620 && guard++ < 52000) {
       const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * NEW_ISLAND.R * 0.66;
+      const r = Math.sqrt(Math.random()) * NEW_ISLAND.R * 0.82;
       const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
       const h = newIslandHeightAt(x, z);
-      if (h < 3.0 || h > 26) continue;
+      if (h < 2.2 || h > 32) continue;
       const slope = Math.abs(newIslandHeightAt(x + 2, z) - h) + Math.abs(newIslandHeightAt(x, z + 2) - h);
-      if (slope > 2.4) continue;
+      if (slope > 3.0) continue;
       canopyData.push({ x, z, y: h });
     }
+  }
+  const jungleTreeData = [];
+  {
+    const addJungleTrees = (kind, count, rMin, rMax, hMin, hMax, maxSlope, guardMax) => {
+      let made = 0, guard = 0;
+      while (made < count && guard++ < guardMax) {
+        const a = Math.random() * Math.PI * 2;
+        const r = NEW_ISLAND.R * (rMin + Math.random() * (rMax - rMin));
+        const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
+        const h = newIslandHeightAt(x, z);
+        if (h < hMin || h > hMax) continue;
+        const slope = Math.abs(newIslandHeightAt(x + 2, z) - h) + Math.abs(newIslandHeightAt(x, z + 2) - h);
+        if (slope > maxSlope) continue;
+        jungleTreeData.push({ kind, x, z, y: h });
+        made++;
+      }
+    };
+    addJungleTrees('buttress', 95, 0.18, 0.68, 4.5, 36, 3.1, 16000); // 高大板根树
+    addJungleTrees('banyan', 70, 0.22, 0.74, 2.8, 28, 2.8, 14000);   // 榕树/气根树
+    addJungleTrees('fern', 150, 0.16, 0.80, 1.4, 24, 3.2, 18000);    // 桫椤蕨树
   }
   // 第二步:地形网格 + 烘焙 AO(谷地压暗 + 每棵树的树荫)
   const islGeo = new THREE.PlaneGeometry(ISLAND.R * 2.8, ISLAND.R * 2.8, 190, 190);
@@ -2544,19 +2941,33 @@ async function boot() {
   scene.add(islMesh);
 
   // ---- 新海域:更大的荒岛(地形网格 + 野人)----
-  const newIsland = { unlocked: false };    // 踏上过新岛后解锁死亡重生选项
+  const newIsland = { unlocked: false, landedT: 0 };    // 踏上过新岛后解锁死亡重生选项;landedT=上岸后和平计时
+  const relicSpots = {};
   {
     const g2 = new THREE.PlaneGeometry(NEW_ISLAND.R * 2.8, NEW_ISLAND.R * 2.8, 150, 150);
     g2.rotateX(-Math.PI / 2);
     const p2 = g2.attributes.position;
     const ao2 = new Float32Array(p2.count);
+    const shadows2 = [];
+    for (const t of palmData) shadows2.push({ x: t.x, z: t.z, r2: 4.2 * 4.2, k: 0.34 });
+    for (const t of canopyData) shadows2.push({ x: t.x, z: t.z, r2: 7.0 * 7.0, k: 0.52 });
+    for (const t of jungleTreeData) {
+      const big = t.kind === 'buttress' || t.kind === 'banyan';
+      shadows2.push({ x: t.x, z: t.z, r2: (big ? 8.5 : 4.8) ** 2, k: big ? 0.58 : 0.36 });
+    }
     for (let i = 0; i < p2.count; i++) {
       const x = p2.getX(i) + NEW_ISLAND.x, z = p2.getZ(i) + NEW_ISLAND.z;
       const h = newIslandHeightAt(x, z);
       p2.setY(i, h);
       const nb = (newIslandHeightAt(x + 3, z) + newIslandHeightAt(x - 3, z)
         + newIslandHeightAt(x, z + 3) + newIslandHeightAt(x, z - 3)) * 0.25;
-      ao2[i] = Math.max(0.45, Math.min(1, 1 - (nb - h) * 0.10));
+      let ao = Math.max(0.36, Math.min(1, 1 - (nb - h) * 0.11));
+      for (const s of shadows2) {
+        const dx = x - s.x, dz = z - s.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < s.r2) ao *= 1 - s.k * (1 - d2 / s.r2);
+      }
+      ao2[i] = ao;
     }
     g2.computeVertexNormals();
     g2.setAttribute('aAO', new THREE.BufferAttribute(ao2, 1));
@@ -2566,9 +2977,165 @@ async function boot() {
     mesh2.position.set(NEW_ISLAND.x, 0, NEW_ISLAND.z);
     scene.add(mesh2);
   }
-  // 野人:新岛上的原住民,持矛游荡;人被近身会挨揍(生命 -12)
+  let swordTurret = null;
+  const SWORD_TURRET_EYE_LIFT = 4.8;       // 操控炮台时把视角放到炮台最顶上方,便于俯瞰脚下野人。
+  const greatWallMeshes = [];
+  const SHOW_GREAT_WALL = true;
+  // 第二岛制高点:保留长城墙体;高架长剑炮台只保留柱子和炮身,不显示炮台底部圆盘。
+  {
+    const wallPts = [];
+    for (let i = 0; i < 34; i++) wallPts.push(newIslandWallPoint(i));
+    const high = newIslandGreatWallHighPoint();
+    relicSpots.greatWall = { x: high.x, z: high.z };
+    if (SHOW_GREAT_WALL) {
+    const wallMat = (() => { const m = new THREE.MeshBasicNodeMaterial({ transparent: true }); m.colorNode = marineSkin(vec3(0.36, 0.34, 0.30)); return m; })();
+    const rampMat = (() => { const m = new THREE.MeshBasicNodeMaterial({ transparent: true }); m.colorNode = marineSkin(vec3(0.31, 0.28, 0.22)); return m; })();
+    const moatMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+    moatMat.colorNode = canalWaterColor();
+    moatMat.opacityNode = float(0.86);
+    moatMat.side = THREE.DoubleSide;
+    const moatVerts = [], moatIdx = [];
+    const moatW = 13.5;
+    for (let i = 0; i < wallPts.length; i++) {
+      const p = wallPts[i];
+      const q = wallPts[Math.min(i + 1, wallPts.length - 1)];
+      let dx = q.x - p.x, dz = q.z - p.z;
+      const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+      const bankFloor = Math.min(p.h, newIslandHeightAt(p.x - dz * moatW, p.z + dx * moatW), newIslandHeightAt(p.x + dz * moatW, p.z - dx * moatW));
+      const waterY = bankFloor + 1.45;
+      moatVerts.push(p.x - dz * moatW, waterY, p.z + dx * moatW,
+                     p.x + dz * moatW, waterY, p.z - dx * moatW);
+      if (i > 0) {
+        const b = i * 2;
+        moatIdx.push(b - 2, b - 1, b, b - 1, b + 1, b);
+      }
+    }
+    const moatGeo = new THREE.BufferGeometry();
+    moatGeo.setAttribute('position', new THREE.Float32BufferAttribute(moatVerts, 3));
+    moatGeo.setIndex(moatIdx);
+    moatGeo.computeVertexNormals();
+    scene.add(new THREE.Mesh(moatGeo, moatMat));
+    {
+      const ramp = newIslandGreatWallRampInfo();
+      const sx = ramp.start.x, sz = ramp.start.z, ex = ramp.end.x, ez = ramp.end.z;
+      let dx = ex - sx, dz = ez - sz;
+      const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+      const px = -dz, pz = dx, w = ramp.width;
+      const sy = newIslandHeightAt(sx, sz) + 0.18, ey = ramp.top + 0.1;
+      const verts = [
+        sx + px * w, sy, sz + pz * w,
+        sx - px * w, sy, sz - pz * w,
+        ex + px * w, ey, ez + pz * w,
+        ex - px * w, ey, ez - pz * w
+      ];
+      const rampGeo = new THREE.BufferGeometry();
+      rampGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      rampGeo.setIndex([0, 1, 2, 1, 3, 2]);
+      rampGeo.computeVertexNormals();
+      const rampMesh = new THREE.Mesh(rampGeo, rampMat);
+      scene.add(rampMesh);
+      greatWallMeshes.push(rampMesh);
+    }
+    for (let i = 0; i < wallPts.length - 1; i++) {
+      if (i === 11 || i === 12 || i === 23) continue; // 几处坍塌缺口
+      const a = wallPts[i], b = wallPts[i + 1];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      const midX = (a.x + b.x) * 0.5, midZ = (a.z + b.z) * 0.5;
+      const midH = newIslandHeightAt(midX, midZ);
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(6.4, 8.4, len + 1.0), wallMat);
+      seg.position.set(midX, midH + 4.2, midZ);
+      seg.rotation.y = Math.atan2(dx, dz);
+      scene.add(seg);
+      greatWallMeshes.push(seg);
+      if (i % 2 === 0) {
+        const crenel = new THREE.Mesh(new THREE.BoxGeometry(6.9, 1.25, Math.min(6.4, len * 0.55)), wallMat);
+        crenel.position.set(midX, midH + 9.05, midZ);
+        crenel.rotation.y = seg.rotation.y;
+        scene.add(crenel);
+        greatWallMeshes.push(crenel);
+      }
+    }
+    const towerIdx = [2, 16, 31];
+    for (const idx of towerIdx) {
+      const p = wallPts[idx], h = newIslandHeightAt(p.x, p.z);
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(13.5, 15.8, 13.5), wallMat);
+      tower.position.set(p.x, h + 7.9, p.z);
+      tower.rotation.y = idx * 0.37;
+      scene.add(tower);
+      greatWallMeshes.push(tower);
+      const top = new THREE.Mesh(new THREE.BoxGeometry(15.5, 1.35, 15.5), wallMat);
+      top.position.set(p.x, h + 16.45, p.z);
+      top.rotation.y = tower.rotation.y;
+      scene.add(top);
+      greatWallMeshes.push(top);
+    }
+    }
+    const turretMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.48, 0.38, 0.24)); return m; })();
+    const bladeMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.76, 0.78, 0.72)); return m; })();
+    const turret = new THREE.Group();
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 5.0), bladeMat);
+    rail.position.set(0, 0.86, 1.8);
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.16, 0.22), bladeMat);
+    cross.position.set(0, 0.86, 0.05);
+    const sight = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.55, 10), bladeMat);
+    sight.rotation.x = Math.PI / 2;
+    sight.position.set(0, 1.22, 0.55);
+    turret.add(rail, cross, sight);
+    const th = newIslandHeightAt(high.x, high.z);
+    const turretY = th + 42.0;
+    const lift = new THREE.Mesh(new THREE.CylinderGeometry(1.45, 2.3, 24.0, 12), turretMat);
+    lift.position.set(high.x, th + 28.9, high.z);
+    scene.add(lift);
+    turret.position.set(high.x, turretY, high.z);
+    turret.rotation.y = Math.atan2(NEW_ISLAND.x - high.x, NEW_ISLAND.z - high.z);
+    scene.add(turret);
+    swordTurret = { x: high.x, y: turretY, z: high.z, dir: turret.rotation.y, ammo: 1000, mesh: turret };
+  }
+  // 新岛边缘低雾:只围在外缘与林线之间,海边水面仍然清楚可见
+  {
+    const fogMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+    fogMat.colorNode = marineSkin(vec3(0.72, 0.82, 0.80));
+    fogMat.opacityNode = float(0.26);
+    for (let i = 0; i < 28; i++) {
+      const a = (i / 28) * Math.PI * 2;
+      const r = NEW_ISLAND.R * (1.02 + (i % 3) * 0.035);
+      const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
+      const h = Math.max(0.8, newIslandHeightAt(x, z) + 1.0);
+      const fog = new THREE.Mesh(new THREE.PlaneGeometry(34 + (i % 4) * 10, 7 + (i % 3) * 2), fogMat);
+      fog.position.set(x, h + 2.2, z);
+      fog.rotation.y = -a + Math.PI / 2;
+      fog.frustumCulled = false;
+      scene.add(fog);
+    }
+  }
+  // 第三/第四岛:由野人阵营结局解锁航向,先作为远方真实岛体存在
+  function addRemoteIslandMesh(isle) {
+    const g = new THREE.PlaneGeometry(isle.R * 2.6, isle.R * 2.6, 96, 96);
+    g.rotateX(-Math.PI / 2);
+    const p = g.attributes.position;
+    const ao = new Float32Array(p.count).fill(0.82);
+    for (let i = 0; i < p.count; i++) {
+      p.setY(i, remoteIslandHeightAt(isle, p.getX(i) + isle.x, p.getZ(i) + isle.z));
+    }
+    g.computeVertexNormals();
+    g.setAttribute('aAO', new THREE.BufferAttribute(ao, 1));
+    const mesh = new THREE.Mesh(g, islMat);
+    mesh.position.set(isle.x, 0, isle.z);
+    scene.add(mesh);
+  }
+  addRemoteIslandMesh(THIRD_ISLAND);
+  addRemoteIslandMesh(FOURTH_ISLAND);
+  // 野人:新岛上的原住民,持矛游荡;玩家初始生命 200,野人伤害偏低但频繁。
   const savages = [];
   {
+    const SAVAGE_JOBS = {
+      swordsman: { name: '剑士', hp: 100, speed: 1.12, dmg: 13 },
+      spearman: { name: '长矛战士', hp: 100, speed: 1.00, dmg: 12 },
+      shield: { name: '盾兵', hp: 100, speed: 0.82, dmg: 9 },
+      poisoner: { name: '炼毒师', hp: 100, speed: 0.95, dmg: 8, poison: true },
+    };
+    const jobCycle = ['swordsman', 'spearman', 'shield', 'poisoner'];
     const sBody = new THREE.CapsuleGeometry(0.19, 0.9, 4, 10);
     sBody.translate(0, 0.72, 0);
     const sHead = new THREE.SphereGeometry(0.15, 10, 8);
@@ -2578,22 +3145,147 @@ async function boot() {
     const sMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.42, 0.28, 0.16)); return m; })();
     const spearGeo = new THREE.CylinderGeometry(0.02, 0.03, 1.9, 5);
     const spearMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.35, 0.24, 0.12)); return m; })();
+    const swordGeo = new THREE.BoxGeometry(0.08, 0.04, 1.05);
+    const swordMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.62, 0.64, 0.58)); return m; })();
+    const shieldGeo = new THREE.BoxGeometry(0.38, 0.55, 0.07);
+    const shieldMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.18, 0.20, 0.16)); return m; })();
+    const poisonGeo = new THREE.SphereGeometry(0.10, 8, 6);
+    const poisonMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.10, 0.55, 0.22)); return m; })();
+    const elderBoneMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.86, 0.78, 0.58)); return m; })();
+    const elderCloakMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.30, 0.05, 0.04)); return m; })();
+    const guardArmorMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.08, 0.10, 0.09)); return m; })();
+    const guardPaintMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.78, 0.78, 0.70)); return m; })();
+    const stoneClothMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.55, 0.36, 0.18)); return m; })();
+    const stonePaintMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.82, 0.78, 0.64)); return m; })();
+    const mistClothMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.10, 0.34, 0.22)); return m; })();
+    const mistPaintMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.22, 0.64, 0.58)); return m; })();
+    function applySavageFactionVisual(mesh, faction) {
+      const mark = new THREE.Group();
+      mark.name = 'factionVisual';
+      if (faction === 'stone') {
+        const sash = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.72, 0.045), stoneClothMat);
+        sash.position.set(-0.08, 0.93, 0.205);
+        sash.rotation.z = -0.46;
+        mark.add(sash);
+        const waist = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.08, 0.055), stoneClothMat);
+        waist.position.set(0, 0.70, 0.21);
+        mark.add(waist);
+        const faceStripe = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.035, 0.035), stonePaintMat);
+        faceStripe.position.set(0, 1.46, 0.145);
+        mark.add(faceStripe);
+        for (let k = 0; k < 3; k++) {
+          const bead = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.055, 0.035), stonePaintMat);
+          bead.position.set((k - 1) * 0.09, 1.20, 0.20);
+          mark.add(bead);
+        }
+      } else {
+        const leafCape = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.42, 0.05), mistClothMat);
+        leafCape.position.set(0, 1.02, -0.19);
+        leafCape.rotation.x = -0.28;
+        mark.add(leafCape);
+        for (const sx of [-1, 1]) {
+          const armBand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.26, 0.045), mistClothMat);
+          armBand.position.set(sx * 0.22, 1.03, 0.18);
+          armBand.rotation.z = sx * 0.28;
+          mark.add(armBand);
+        }
+        const brow = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.028, 0.032), mistPaintMat);
+        brow.position.set(0, 1.52, 0.145);
+        mark.add(brow);
+        const cheekL = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.16, 0.032), mistPaintMat);
+        cheekL.position.set(-0.095, 1.40, 0.145);
+        const cheekR = cheekL.clone();
+        cheekR.position.x = 0.095;
+        mark.add(cheekL, cheekR);
+      }
+      mesh.add(mark);
+    }
+    function clearSavageRankVisual(mesh) {
+      const old = mesh.getObjectByName('rankVisual');
+      if (old) mesh.remove(old);
+    }
+    function applySavageRankVisual(mesh, elder) {
+      clearSavageRankVisual(mesh);
+      const mark = new THREE.Group();
+      mark.name = 'rankVisual';
+      if (elder) {
+        const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.12, 0.32, 7), elderBoneMat);
+        crown.position.set(0, 1.67, 0);
+        mark.add(crown);
+        for (let k = 0; k < 5; k++) {
+          const tooth = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.038, 0.34, 5), elderBoneMat);
+          tooth.position.set((k - 2) * 0.08, 1.88, -0.03);
+          tooth.rotation.z = (k - 2) * 0.16;
+          mark.add(tooth);
+        }
+        const cloak = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.62, 0.055), elderCloakMat);
+        cloak.position.set(0, 1.03, -0.19);
+        cloak.rotation.x = -0.18;
+        mark.add(cloak);
+        const badge = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.17, 0.04), elderBoneMat);
+        badge.position.set(0, 1.12, 0.21);
+        mark.add(badge);
+      } else {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.22), guardArmorMat);
+        band.position.set(0, 1.50, 0.01);
+        mark.add(band);
+        const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.09, 0.22), guardArmorMat);
+        shoulderL.position.set(-0.22, 1.18, 0.03);
+        shoulderL.rotation.z = 0.22;
+        const shoulderR = shoulderL.clone();
+        shoulderR.position.x = 0.22;
+        shoulderR.rotation.z = -0.22;
+        mark.add(shoulderL, shoulderR);
+        const stripeL = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.36, 0.045), guardPaintMat);
+        stripeL.position.set(-0.15, 0.98, 0.21);
+        stripeL.rotation.z = -0.25;
+        const stripeR = stripeL.clone();
+        stripeR.position.x = 0.15;
+        stripeR.rotation.z = 0.25;
+        mark.add(stripeL, stripeR);
+      }
+      mesh.add(mark);
+    }
     let placed = 0, guard = 0;
-    while (placed < 7 && guard++ < 4000) {
+    while (placed < 16 && guard++ < 7000) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * NEW_ISLAND.R * 0.75;
       const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
       const h = newIslandHeightAt(x, z);
       if (h < 1.5 || h > 22) continue;
       const mesh = new THREE.Mesh(sGeo, sMat);
-      const spear = new THREE.Mesh(spearGeo, spearMat);
-      spear.position.set(0.3, 0.9, 0.1);
-      spear.rotation.z = -0.25;
-      mesh.add(spear);
+      const faction = placed % 2 === 0 ? 'stone' : 'mist';
+      applySavageFactionVisual(mesh, faction);
+      const job = jobCycle[placed % jobCycle.length];
+      if (job === 'swordsman') {
+        const sword = new THREE.Mesh(swordGeo, swordMat);
+        sword.position.set(0.32, 0.95, 0.18);
+        sword.rotation.set(0.72, 0, -0.28);
+        mesh.add(sword);
+      } else {
+        const spear = new THREE.Mesh(spearGeo, spearMat);
+        spear.position.set(0.3, 0.9, 0.1);
+        spear.rotation.z = -0.25;
+        mesh.add(spear);
+      }
+      if (job === 'shield') {
+        const shield = new THREE.Mesh(shieldGeo, shieldMat);
+        shield.position.set(-0.25, 0.92, 0.13);
+        shield.rotation.y = 0.18;
+        mesh.add(shield);
+      }
+      if (job === 'poisoner') {
+        const vial = new THREE.Mesh(poisonGeo, poisonMat);
+        vial.position.set(-0.24, 1.10, 0.16);
+        mesh.add(vial);
+      }
       mesh.position.set(x, h, z);
       scene.add(mesh);
       savages.push({ mesh, x, z, dir: Math.random() * Math.PI * 2, t: 0, speed: 0,
-                     state: 'wander', hp: 2, dead: false, fallK: 0, hitCd: 0, respawnT: 0 });
+                     faction,
+                     job, jobName: SAVAGE_JOBS[job].name, maxHp: SAVAGE_JOBS[job].hp,
+                     state: 'wander', hp: SAVAGE_JOBS[job].hp, dead: false, fallK: 0, hitCd: 0, respawnT: 0,
+                     homeX: x, homeZ: z });
       placed++;
     }
   }
@@ -2603,8 +3295,15 @@ async function boot() {
   // 沉船宝藏(要密码的彩蛋):密码线索刻在图腾上(图腾可按 E 查看)
   const RELIC_PASSWORD = '523';          // 图腾密码:五座山 · 两条河 · 三棵神树
   const MEMORIAL_PASSWORD = '1942';      // 红五星墓碑密码:帕维尔随西比里亚科夫号激战沉海之年(墓志铭里有)
-  const relics = { chestOpen: false, totemRead: false, altarCd: 0, altarUsed: 0, memorialRead: false, memorialOpen: false };
-  const relicSpots = {};
+  const relics = {
+    chestOpen: false, totemRead: false, altarCd: 0, altarUsed: 0, memorialRead: false, memorialOpen: false,
+    tribeAlly: null, thirdUnlocked: false, fourthUnlocked: false, yinyangCompass: false, antidote: 0,
+    stoneMercy: 0, mistMercy: 0,
+    tombFound: false, tombKit: false, tombDug: false, tombOpened: false, tombOpeningT: 0,
+    tombLooted: false, tombWaterOpen: false, tombLetterPage: 0,
+    tombDeaths: 0, authorMode: false, tombGuide: false,
+    war: { mode: 'none', t: 0, next: 8, waveT: 0, sent: 0, killed: 0, max: 500, ending: false }
+  };
   {
     const stoneMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.42, 0.40, 0.36)); return m; })();
     const woodMat2 = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.36, 0.24, 0.12)); return m; })();
@@ -2683,7 +3382,7 @@ async function boot() {
       firePile.position.set(s.x, s.h + 0.15, s.z);
       scene.add(firePile);
     }
-    // 野人村落:六座茅屋围一圈 + 村口图腾 + 石火塘,三个野人在此聚居
+    // 石牙村:六座茅屋围一圈 + 村口图腾 + 石火塘,信奉强攻与投石
     {
       const s = flatSpot(NEW_ISLAND.R * 0.45, NEW_ISLAND.R * 0.65, 4, 14);
       relicSpots.village = { x: s.x, z: s.z };
@@ -2703,12 +3402,54 @@ async function boot() {
       const fire = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.7, 0.3, 8), stoneMat);
       fire.position.set(s.x + 3, newIslandHeightAt(s.x + 3, s.z + 2) + 0.15, s.z + 2);
       scene.add(fire);
-      // 三个野人把家安在村落里
+      const sax = s.x + 14, saz = s.z;
+      relicSpots.stoneAltar = { x: sax, z: saz };
+      const altar = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, 0.5, 8), stoneMat);
+      altar.position.set(sax, newIslandHeightAt(sax, saz) + 0.25, saz);
+      scene.add(altar);
+      // 石牙野人把家安在村落里
       let moved = 0;
       for (const sv of savages) {
-        if (moved >= 3) break;
+        if (sv.faction !== 'stone' || moved >= 6) continue;
         const a = Math.random() * Math.PI * 2;
-        sv.x = s.x + Math.cos(a) * 6; sv.z = s.z + Math.sin(a) * 6;
+        sv.x = s.x + Math.cos(a) * (5 + Math.random() * 6);
+        sv.z = s.z + Math.sin(a) * (5 + Math.random() * 6);
+        sv.homeX = s.x; sv.homeZ = s.z;
+        sv.mesh.position.set(sv.x, newIslandHeightAt(sv.x, sv.z), sv.z);
+        moved++;
+      }
+    }
+    // 雾叶村:另一套观念,相信避战、毒药与迷雾,与石牙村长期敌对
+    {
+      const s = flatSpot(NEW_ISLAND.R * 0.46, NEW_ISLAND.R * 0.72, 4, 16);
+      relicSpots.village2 = { x: s.x, z: s.z };
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * Math.PI * 2 - 0.4;
+        const hx = s.x + Math.cos(a) * 10, hz = s.z + Math.sin(a) * 10;
+        const hut = new THREE.Mesh(new THREE.ConeGeometry(1.7, 3.4, 8), woodMat2);
+        hut.position.set(hx, newIslandHeightAt(hx, hz) + 1.7, hz);
+        hut.rotation.y = a;
+        scene.add(hut);
+      }
+      const vpole = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.32, 4.2, 8), woodMat2);
+      vpole.position.set(s.x, s.h + 2.1, s.z);
+      scene.add(vpole);
+      const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.36, 10, 8), goldMat);
+      leaf.scale.set(1.0, 0.45, 0.35);
+      leaf.position.set(s.x, s.h + 3.2, s.z + 0.28);
+      scene.add(leaf);
+      const sax = s.x - 14, saz = s.z;
+      relicSpots.mistAltar = { x: sax, z: saz };
+      const altar = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.85, 0.45, 8), stoneMat);
+      altar.position.set(sax, newIslandHeightAt(sax, saz) + 0.23, saz);
+      scene.add(altar);
+      let moved = 0;
+      for (const sv of savages) {
+        if (sv.faction !== 'mist' || moved >= 6) continue;
+        const a = Math.random() * Math.PI * 2;
+        sv.x = s.x + Math.cos(a) * (5 + Math.random() * 7);
+        sv.z = s.z + Math.sin(a) * (5 + Math.random() * 7);
+        sv.homeX = s.x; sv.homeZ = s.z;
         sv.mesh.position.set(sv.x, newIslandHeightAt(sv.x, sv.z), sv.z);
         moved++;
       }
@@ -2737,34 +3478,17 @@ async function boot() {
       star.position.set(s.x, s.h + 1.85, s.z + 0.17);
       scene.add(star);
     }
-    // 小溪:从岛心制高点一路找低处蜿蜒入海(亮蓝水带)
+    // 第二岛河流:固定宽河道,沿雨林溪谷蜿蜒入海,远看也能读出水线。
     {
-      let sx = NEW_ISLAND.x, sz = NEW_ISLAND.z, sh = -1;
-      for (let i = 0; i < 2000; i++) {
-        const a = Math.random() * Math.PI * 2, r = Math.random() * NEW_ISLAND.R * 0.3;
-        const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
-        const h = newIslandHeightAt(x, z);
-        if (h > sh) { sx = x; sz = z; sh = h; }
-      }
       const path = [];
-      let px = sx, pz = sz;
-      for (let step = 0; step < 160; step++) {
-        const h = newIslandHeightAt(px, pz);
-        path.push({ x: px, z: pz, h });
-        if (h < 0.7) break;                    // 入海
-        let bx = px, bz = pz, bh = h;
-        for (let k = 0; k < 10; k++) {         // 四下探低,随步数偏转让溪线蜿蜒
-          const a = (k / 10) * Math.PI * 2 + step * 0.35;
-          const nx = px + Math.cos(a) * 5, nz = pz + Math.sin(a) * 5;
-          const nh = newIslandHeightAt(nx, nz);
-          if (nh < bh) { bx = nx; bz = nz; bh = nh; }
-        }
-        if (bx === px && bz === pz) {          // 困在洼地:顺势朝岛外挪
-          const ox = px - NEW_ISLAND.x, oz = pz - NEW_ISLAND.z;
-          const od = Math.hypot(ox, oz) || 1;
-          bx = px + ox / od * 5; bz = pz + oz / od * 5;
-        }
-        px = bx; pz = bz;
+      for (let i = 0; i < 132; i++) {
+        const u = i / 131;
+        const nz = -0.78 + u * 1.56;
+        const curve = -0.12 + Math.sin((nz + 0.70) * 2.45) * 0.18 + Math.sin((nz + 0.70) * 8.2) * 0.045;
+        const x = NEW_ISLAND.x + curve * NEW_ISLAND.R;
+        const z = NEW_ISLAND.z + nz * NEW_ISLAND.R;
+        const h = Math.max(0.18, newIslandHeightAt(x, z) + 0.18);
+        path.push({ x, z, h, w: 4.8 + Math.sin(u * Math.PI) * 3.6 });
       }
       if (path.length > 4) {
         const verts = [], idx = [];
@@ -2773,8 +3497,8 @@ async function boot() {
           const q = path[Math.min(i + 1, path.length - 1)];
           let dx = q.x - p.x, dz = q.z - p.z;
           const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
-          verts.push(p.x - dz * 0.9, p.h + 0.07, p.z + dx * 0.9,
-                     p.x + dz * 0.9, p.h + 0.07, p.z - dx * 0.9);
+          verts.push(p.x - dz * p.w, p.h + 0.09, p.z + dx * p.w,
+                     p.x + dz * p.w, p.h + 0.09, p.z - dx * p.w);
           if (i > 0) {
             const b = i * 2;
             idx.push(b - 2, b - 1, b, b - 1, b + 1, b);
@@ -2785,7 +3509,7 @@ async function boot() {
         sgeo.setIndex(idx);
         sgeo.computeVertexNormals();
         const smat = new THREE.MeshBasicNodeMaterial();
-        smat.colorNode = marineSkin(vec3(0.36, 0.78, 0.86));
+        smat.colorNode = marineSkin(vec3(0.22, 0.70, 0.72));
         scene.add(new THREE.Mesh(sgeo, smat));
         const mid = path[Math.floor(path.length / 2)];
         relicSpots.stream = { x: mid.x, z: mid.z };
@@ -2797,7 +3521,7 @@ async function boot() {
     if (relics.altarCd > 0) { showToast('祭坛的余温还没散去……(冷却 ' + Math.ceil(relics.altarCd) + 's)'); return; }
     relics.altarCd = 60;
     relics.altarUsed = 30;
-    walker.hp = Math.min(100, walker.hp + 20);
+    walker.hp = Math.min(PLAYER_HP_MAX, walker.hp + 20);
     startHandAction('shake');
     showToast('🗿 你把手放上古老石台 —— 远处野人朝你点头致意!30 秒内它们不会攻击你(生命 +20)');
   }
@@ -2806,19 +3530,19 @@ async function boot() {
     relics.totemRead = true;
     showToast('🗿 图腾上刻着先民的歌谣:「五座山矗立 · 两条河奔流 · 三棵神树结果」—— 像是在暗示一串数字');
   }
-  // 宝箱:输入图腾密码 → 前人宝藏(磁吸炸弹补满 + 神肉 + 弹药)
+  // 宝箱:输入图腾密码 → 前人宝藏(磁吸炸弹补给 + 神肉 + 弹药)
   function openRelicChest() {
     if (relics.chestOpen) { showToast('宝箱已经空了'); return; }
     const pwd = window.prompt('鎏金宝箱上着一把三位数密码锁' + (relics.totemRead ? '(想想图腾上的歌谣)' : '(岛上似乎有线索……)') + ':');
     if (pwd === null) return;
     if (pwd.trim() === RELIC_PASSWORD) {
       relics.chestOpen = true;
-      walker.bombs = 2;
+      walker.bombs += 5;
       walker.godMeat += 2;
       walker.sniperAmmo += 8;
       walker.smgAmmo += 60;
       startHandAction('pickup');
-      showToast('🏆 宝箱开了!前人留下的宝藏:磁吸炸弹补满 ×2 · 神肉 ×2 · 狙击弹 +8 · 冲锋弹 +60');
+      showToast('🏆 宝箱开了!前人留下的宝藏:磁吸炸弹补给 +5 · 神肉 ×2 · 狙击弹 +8 · 冲锋弹 +60');
     } else showToast('密码不对…… 去岛上找找线索吧(图腾?)');
   }
   // 红五星墓碑:第一次 E 读墓志铭(帕维尔的事迹,答案就在里面);第二次 E 开暗格输年份
@@ -2840,6 +3564,148 @@ async function boot() {
       startHandAction('pickup');
       showToast('🏆 暗格开了!帕维尔的遗物:神肉 ×2 · 狙击弹 +6 · 冲锋弹 +40 · 磁吸炸弹 +1 —— 他的勇气与你同在');
     } else showToast('年份不对…… 再读一遍墓志铭吧');
+  }
+
+  function allyStoneVillage() {
+    if (relics.tribeAlly && relics.tribeAlly !== 'stone') {
+      showToast('雾叶村已经把你视作同伴,石牙村只会冷冷盯着你');
+      return;
+    }
+    relics.tribeAlly = 'stone';
+    walker.villageLooted = true;
+    walker.catapult = true;
+    walker.spear = true;
+    walker.weapon = 'spear';
+    $('ih-weapon-item').style.display = 'flex';
+    startHandAction('pickup');
+    showToast('🪨 结局分支 · 石牙盟友:你帮助强攻派压制雾叶村,获得固定投石机部件;去石崖岛还需要墓穴里的阴阳罗盘为泰坦指路');
+  }
+  function allyMistVillage() {
+    if (relics.tribeAlly && relics.tribeAlly !== 'mist') {
+      showToast('石牙村已经把你视作同伴,雾叶村不再信任你');
+      return;
+    }
+    relics.tribeAlly = 'mist';
+    relics.antidote += 3;
+    walker.spear = true;
+    walker.weapon = 'spear';
+    $('ih-weapon-item').style.display = 'flex';
+    startHandAction('pickup');
+    showToast('🌫 结局分支 · 雾叶盟友:你帮助避战派守住迷雾林,获得解毒药 ×3;去物业/雾叶岛还需要墓穴里的阴阳罗盘为泰坦指路');
+  }
+  function markSavageDead(sv, respawnT = 90) {
+    if (!sv || sv.dead) return;
+    sv.dead = true;
+    sv.fallK = 0;
+    sv.respawnT = respawnT;
+    sv.warActive = false;
+    if (sv.warUnit && !sv.warCounted) {
+      sv.warCounted = true;
+      relics.war.killed = Math.min(relics.war.max, relics.war.killed + 1);
+      if (relics.war.killed >= relics.war.max && !relics.war.ending) {
+        relics.war.ending = true;
+        relics.war.mode = 'none';
+        relics.war.next = 1e9;
+        relics.thirdUnlocked = true;
+        walker.buff = true;
+        showToast('🏆 第三结局 · 孤岛征服者:两个阵营派出的 500 名野人全部被你歼灭!第三岛航向解锁,两村再也无力围剿你');
+      } else if (relics.war.killed > 0 && relics.war.killed % 50 === 0) {
+        showToast('⚔ 围剿野人已歼灭 ' + relics.war.killed + '/' + relics.war.max);
+      }
+      if (relics.war.max - relics.war.killed <= 36) spawnSavageElderSquad();
+    }
+    if (sv.elder) {
+      for (const guard of savages) {
+        if (guard.guard && !guard.dead) {
+          guard.aggroT = Math.min(guard.aggroT || 0, 8);
+          guard.state = 'wander';
+        }
+      }
+      showToast('野人长老倒下,警卫队开始溃散 —— 赶紧清掉剩下的人');
+    }
+  }
+  function spawnSavageElderSquad() {
+    if (relics.war.elderSent || !walker.on) return;
+    relics.war.elderSent = true;
+    relics.war.mode = 'elder';
+    relics.war.t = Math.max(relics.war.t || 0, 95);
+    relics.war.waveT = 1e9;
+    const squad = savages.filter(sv => !sv.dead).slice().sort((a, b) => {
+      const da = Math.hypot((a.homeX || NEW_ISLAND.x) - a.x, (a.homeZ || NEW_ISLAND.z) - a.z);
+      const db = Math.hypot((b.homeX || NEW_ISLAND.x) - b.x, (b.homeZ || NEW_ISLAND.z) - b.z);
+      return da - db;
+    }).slice(0, 11);
+    for (let i = 0; i < squad.length; i++) {
+      const sv = squad[i];
+      const elder = i === 0;
+      const h = Math.max(1, newIslandHeightAt(sv.x, sv.z));
+      sv.dir = Math.atan2(walker.x - sv.x, walker.z - sv.z);
+      sv.fallK = 0; sv.respawnT = elder ? 999 : 180;
+      sv.warUnit = true; sv.warActive = true; sv.warCounted = false;
+      sv.elder = elder; sv.guard = !elder;
+      sv.job = elder ? 'elder' : (i % 3 === 0 ? 'shield' : i % 3 === 1 ? 'spearman' : 'poisoner');
+      sv.jobName = elder ? '野人长老' : '长老警卫';
+      sv.maxHp = elder ? 200 : 100;
+      sv.hp = sv.maxHp;
+      sv.hitCd = elder ? 1.5 : 0.8;
+      sv.aggroT = elder ? 240 : 120;
+      sv.mesh.visible = true;
+      sv.mesh.scale.setScalar(elder ? 1.45 : 1.16);
+      applySavageRankVisual(sv.mesh, elder);
+      sv.mesh.rotation.x = 0;
+      sv.mesh.position.set(sv.x, h, sv.z);
+    }
+    showToast('⚠ 野人长老亲自出动!他带着 10 名警卫锁定了炮台,毒矛能打到高处的你 —— 速战速决!');
+  }
+  function trustByMercy(faction) {
+    const isStone = faction === 'stone';
+    if (relics.tribeAlly && relics.tribeAlly !== faction) {
+      showToast((isStone ? '石牙' : '雾叶') + '祭坛沉默不语 —— 你已经选择了另一方');
+      return true;
+    }
+    walker.hp = Math.min(PLAYER_HP_MAX, walker.hp + 70);
+    walker.hunger = Math.min(100, walker.hunger + 18);
+    walker.thirst = Math.min(100, walker.thirst + 18);
+    relics.war.mode = 'none';
+    relics.war.t = 0;
+    if (isStone) relics.stoneMercy++; else relics.mistMercy++;
+    const n = isStone ? relics.stoneMercy : relics.mistMercy;
+    startHandAction('shake');
+    if (n >= 5) {
+      if (isStone) allyStoneVillage(); else allyMistVillage();
+      relics.war.next = 1e9;
+      showToast((isStone ? '🪨' : '🌫') + ' 彻底信任达成:你第 5 次来到祭坛接受治疗,'
+        + (isStone ? '石牙村' : '雾叶村') + '承认你不是入侵者,两村不再联合围攻你');
+    } else {
+      showToast((isStone ? '🪨 石牙' : '🌫 雾叶') + '祭坛治疗了你(信任 ' + n + '/5)');
+    }
+    return true;
+  }
+
+  // 毒性生态:雨林毒蛇/毒蛙,不主动远追,但靠太近会中毒
+  const toxicAnimals = [];
+  {
+    const snakeMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.12, 0.34, 0.14)); return m; })();
+    const frogMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.08, 0.55, 0.32)); return m; })();
+    const snakeGeo = new THREE.CapsuleGeometry(0.08, 1.2, 4, 8);
+    snakeGeo.rotateZ(Math.PI / 2);
+    const frogGeo = new THREE.SphereGeometry(0.18, 10, 8);
+    for (let i = 0; i < 18; i++) {
+      const wet = i >= 10;
+      for (let tries = 0; tries < 300; tries++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = NEW_ISLAND.R * (wet ? 0.25 + Math.random() * 0.55 : 0.35 + Math.random() * 0.45);
+        const x = NEW_ISLAND.x + Math.cos(a) * r, z = NEW_ISLAND.z + Math.sin(a) * r;
+        const h = newIslandHeightAt(x, z);
+        if (h < (wet ? 1.0 : 3.5) || h > 22) continue;
+        const mesh = new THREE.Mesh(wet ? frogGeo : snakeGeo, wet ? frogMat : snakeMat);
+        mesh.position.set(x, h + (wet ? 0.14 : 0.08), z);
+        mesh.rotation.y = Math.random() * Math.PI * 2;
+        scene.add(mesh);
+        toxicAnimals.push({ kind: wet ? 'frog' : 'snake', mesh, x, z, dir: mesh.rotation.y, t: Math.random() * 3, biteCd: 0 });
+        break;
+      }
+    }
   }
 
   // 棕榈林:实例化,长在缓坡草带;每棵结 1~3 只椰子
@@ -2882,21 +3748,43 @@ async function boot() {
   }
   scene.add(canopies);
 
+  // 第二岛雨林额外树种:板根巨树 / 榕树气根 / 桫椤蕨树,只作为热带雨林层次补强。
+  function addJungleTreeInstances(kind, geo, yOffset, scaleMin, scaleMax) {
+    const items = jungleTreeData.filter(t => t.kind === kind);
+    const mesh = new THREE.InstancedMesh(geo, palmMat, items.length);
+    mesh.frustumCulled = false;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sv = new THREE.Vector3();
+    items.forEach((td, i) => {
+      const sc = scaleMin + Math.random() * (scaleMax - scaleMin);
+      e.set(0, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.06);
+      q.setFromEuler(e);
+      m.compose(new THREE.Vector3(td.x, td.y + yOffset, td.z), q, sv.set(sc, sc, sc));
+      mesh.setMatrixAt(i, m);
+    });
+    scene.add(mesh);
+    return mesh;
+  }
+  addJungleTreeInstances('buttress', createButtressTreeGeometry(), -0.08, 0.88, 1.35);
+  addJungleTreeInstances('banyan', createBanyanTreeGeometry(), -0.06, 0.80, 1.22);
+  addJungleTreeInstances('fern', createTreeFernGeometry(), -0.04, 0.72, 1.18);
+
   // 岸边礁石:与地形同一套着色,天然融入(aAO 填 1,与地形属性布局一致)
   const rockGeoAO = new THREE.IcosahedronGeometry(1, 1);
   rockGeoAO.setAttribute('aAO', new THREE.BufferAttribute(
     new Float32Array(rockGeoAO.attributes.position.count).fill(1), 1));
-  const rocks = new THREE.InstancedMesh(rockGeoAO, islMat, 20);
+  const rocks = new THREE.InstancedMesh(rockGeoAO, islMat, 80);
   rocks.frustumCulled = false;
-  const rockData = [];                       // 斧头可凿:每块礁石 60s 出 1 石块
+  const rockData = [];                       // 斧头可凿:每块礁石 45s 出 4 石块
   {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sv = new THREE.Vector3();
     let placed = 0, guard = 0;
-    while (placed < 20 && guard++ < 2000) {
+    while (placed < 80 && guard++ < 6000) {
+      const isle = placed % 2 === 0 ? ISLAND : NEW_ISLAND;
+      const heightAt = isle === ISLAND ? islandHeightAt : newIslandHeightAt;
       const a = Math.random() * Math.PI * 2;
-      const r = ISLAND.R * (0.55 + Math.random() * 0.45);
-      const x = ISLAND.x + Math.cos(a) * r, z = ISLAND.z + Math.sin(a) * r;
-      const h = islandHeightAt(x, z);
+      const r = isle.R * (0.55 + Math.random() * 0.45);
+      const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+      const h = heightAt(x, z);
       if (h < -2.0 || h > 4.0) continue;
       e.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       q.setFromEuler(e);
@@ -3017,6 +3905,88 @@ async function boot() {
       driftwoods.push({ mesh, x, z, taken: false, respawnT: 0 });
       placed++;
     }
+  }
+
+  // 海滩绳子:建房与后续升级材料,比漂木更多,主要散在两座岛的潮线附近
+  const ropes = [];
+  {
+    const ropeMat = new THREE.MeshBasicNodeMaterial();
+    ropeMat.colorNode = marineSkin(vec3(0.54, 0.42, 0.25));
+    const ropeGeo = new THREE.TorusGeometry(0.26, 0.035, 6, 18);
+    ropeGeo.rotateX(Math.PI / 2);
+    function scatterRopes(isle, heightFn, count) {
+      let placed = 0, guard = 0;
+      while (placed < count && guard++ < 4000) {
+        const a = Math.random() * Math.PI * 2;
+        const r = isle.R * (0.70 + Math.random() * 0.27);
+        const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+        const h = heightFn(x, z);
+        if (h < 0.15 || h > 2.1) continue;
+        const mesh = new THREE.Mesh(ropeGeo, ropeMat);
+        mesh.position.set(x, h + 0.075, z);
+        mesh.rotation.y = Math.random() * Math.PI;
+        scene.add(mesh);
+        ropes.push({ mesh, x, z, taken: false, respawnT: 0 });
+        placed++;
+      }
+    }
+    scatterRopes(ISLAND, islandHeightAt, 12);
+    scatterRopes(NEW_ISLAND, newIslandHeightAt, 18);
+  }
+
+  // 房基:按 X 用斧子施工,先交材料,再累计敲击;后续可继续升级
+  const buildSites = [];
+  const HOUSE_COSTS = [
+    { timber: 50, rope: 10, hits: 10, name: '小木屋' },
+    { timber: 30, rope: 6, hits: 8, name: '加固木屋' },
+    { timber: 45, rope: 8, hits: 10, name: '雨林据点' },
+  ];
+  {
+    const postMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.38, 0.25, 0.12)); return m; })();
+    const wallMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.58, 0.42, 0.22)); return m; })();
+    const roofMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.24, 0.18, 0.10)); return m; })();
+    function addHouseSite(label, x, z, heightFn) {
+      const y = heightFn(x, z);
+      const group = new THREE.Group();
+      group.position.set(x, y, z);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.16, 3.3), wallMat);
+      base.position.y = 0.08;
+      group.add(base);
+      const parts = { base, posts: [], walls: [], roof: null, loft: null };
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.10, 2.0, 6), postMat);
+        p.position.set(sx * 1.8, 1.0, sz * 1.35);
+        group.add(p);
+        parts.posts.push(p);
+      }
+      for (const [wx, wz, sx, sz] of [[0, -1.45, 4.1, 0.18], [0, 1.45, 4.1, 0.18], [-2.05, 0, 0.18, 2.6], [2.05, 0, 0.18, 2.6]]) {
+        const w = new THREE.Mesh(new THREE.BoxGeometry(sx, 1.45, sz), wallMat);
+        w.position.set(wx, 0.98, wz);
+        group.add(w);
+        parts.walls.push(w);
+      }
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(3.1, 1.35, 4), roofMat);
+      roof.position.y = 2.45;
+      roof.rotation.y = Math.PI / 4;
+      group.add(roof);
+      parts.roof = roof;
+      const loft = new THREE.Mesh(new THREE.BoxGeometry(5.0, 0.18, 4.0), postMat);
+      loft.position.y = 3.05;
+      group.add(loft);
+      parts.loft = loft;
+      scene.add(group);
+      const site = { label, x, z, y, heightFn, stage: 0, paid: false, hits: 0, useCd: 0, mesh: group, parts };
+      buildSites.push(site);
+      updateBuildSiteMesh(site);
+    }
+    function offsetFrom(cx, cz, ox, oz, heightFn) {
+      return { x: cx + ox, z: cz + oz, y: heightFn(cx + ox, cz + oz) };
+    }
+    const oldSpot = offsetFrom(fire.x, fire.z, 8, -5, islandHeightAt);
+    addHouseSite('旧岛房基', oldSpot.x, oldSpot.z, islandHeightAt);
+    const newBase = relicSpots.camp || { x: NEW_ISLAND.x + 58, z: NEW_ISLAND.z - 36 };
+    const newSpot = offsetFrom(newBase.x, newBase.z, -9, 7, newIslandHeightAt);
+    addHouseSite('雨林房基', newSpot.x, newSpot.z, newIslandHeightAt);
   }
 
   // 求生者角色:胶囊人 + 四肢摆动 + 贴地阴影
@@ -3143,6 +4113,18 @@ async function boot() {
   smgFlash.position.set(0, 0.025, 0.62);
   smgFlash.visible = false;
   smgProp.add(smgFlash);
+  const spearProp = new THREE.Mesh(
+    createSpearGeometry(),
+    (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.37, 0.26, 0.13)); return m; })()
+  );
+  spearProp.position.set(0.12, 0.03, -0.18);
+  spearProp.rotation.set(-0.18, 0.04, -0.06);
+  spearProp.visible = false;
+  handsGroup.add(spearProp);
+  const catapultMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.30, 0.20, 0.10)); return m; })();
+  const catapultGeo = createCatapultGeometry();
+  const placedCatapults = [];
+  const catapultEffects = [];
   // 手上的椰子道具(有存货时左手捧着)
   const coconutProp = new THREE.Mesh(
     new THREE.SphereGeometry(0.075, 10, 8),
@@ -3169,7 +4151,7 @@ async function boot() {
       swayX = Math.sin(walker.phase) * 0.012;
     }
     // 动作包络:sin(π·p) 出去再回来
-    const DUR = { shake: 1.1, pickup: 0.7, eat: 1.5, fire: 0.9, shoot: 0.35, chop: 0.55, drink: 1.2 };
+    const DUR = { shake: 1.1, pickup: 0.7, eat: 1.5, fire: 0.9, shoot: 0.35, chop: 0.55, dig: 0.72, drink: 1.2 };
     let lift = 0, reach = 0, curl = 0, jitter = 0, gather = 0;
     if (hands.action) {
       hands.t += dt;
@@ -3181,6 +4163,7 @@ async function boot() {
       if (hands.action === 'fire') { lift = -0.08 * e; reach = 0.20 * e; }
       if (hands.action === 'shoot') { lift = 0.03 * e; reach = -0.13 * e; curl = 0.35 * e; }
       if (hands.action === 'chop') { lift = 0.16 * e; reach = 0.26 * e; curl = 0.8 * e; }
+      if (hands.action === 'dig') { lift = 0.22 * e - 0.08; reach = 0.33 * e; curl = 0.9 * e; jitter = Math.sin(hands.t * 35) * 0.018 * e; }
       if (hands.action === 'drink') { lift = 0.16 * e; reach = 0.10 * e; gather = 0.7 * e; curl = 0.6 * e; }
       if (p >= 1) hands.action = null;
     }
@@ -3190,17 +4173,19 @@ async function boot() {
     handL.position.x = -0.19 + gather * 0.10;
     handR.position.x = 0.19 - gather * 0.10;
     coconutProp.visible = walker.coconut > 0;
-    // 钓鱼时右手换鱼竿;持枪时收起弓与箭、亮出步枪/狙击枪/冲锋枪
+    // 钓鱼时右手换鱼竿;持枪/野人武器时收起弓与箭
     const rifleOut = walker.rifle && walker.weapon === 'rifle' && !fishing.active;
     const sniperOut = walker.sniper && walker.weapon === 'sniper' && !fishing.active;
     const smgOut = walker.smg && walker.weapon === 'smg' && !fishing.active;
+    const spearOut = walker.spear && walker.weapon === 'spear' && !fishing.active;
     rodProp.visible = fishing.active;
-    axeProp.visible = !fishing.active;
+    axeProp.visible = (!fishing.active && !spearOut) || hands.action === 'dig';
     rifleProp.visible = rifleOut;
     sniperProp.visible = sniperOut;
     smgProp.visible = smgOut;
-    bowProp.visible = !fishing.active && !rifleOut && !sniperOut && !smgOut;
-    nockedArrow.visible = walker.arrows > 0 && !fishing.active && !rifleOut && !sniperOut && !smgOut;
+    spearProp.visible = spearOut;
+    bowProp.visible = !fishing.active && !rifleOut && !sniperOut && !smgOut && !spearOut;
+    nockedArrow.visible = walker.arrows > 0 && !fishing.active && !rifleOut && !sniperOut && !smgOut && !spearOut;
     muzzleFlash.visible = rifleOut && hands.action === 'shoot' && hands.t < 0.09;
     sniperFlash.visible = sniperOut && hands.action === 'shoot' && hands.t < 0.09;
     smgFlash.visible = smgOut && hands.action === 'shoot' && hands.t < 0.09;
@@ -3328,20 +4313,566 @@ async function boot() {
   const stones = [];
   {
     const stMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.38, 0.36, 0.33)); return m; })();
-    const stGeo = new THREE.IcosahedronGeometry(0.09, 0);
+    const stGeo = new THREE.IcosahedronGeometry(0.18, 0);
     let placed = 0, guard = 0;
-    while (placed < 18 && guard++ < 4000) {
+    while (placed < 42 && guard++ < 9000) {
+      const isle = placed % 2 === 0 ? ISLAND : NEW_ISLAND;
+      const heightAt = isle === ISLAND ? islandHeightAt : newIslandHeightAt;
       const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * ISLAND.R * 0.85;
-      const x = ISLAND.x + Math.cos(a) * r, z = ISLAND.z + Math.sin(a) * r;
-      const h = islandHeightAt(x, z);
+      const r = Math.sqrt(Math.random()) * isle.R * 0.85;
+      const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+      const h = heightAt(x, z);
       if (h < 0.3 || h > 8) continue;
       const mesh = new THREE.Mesh(stGeo, stMat);
-      mesh.position.set(x, h + 0.05, z);
+      mesh.position.set(x, h + 0.11, z);
       scene.add(mesh);
       stones.push({ mesh, x, z, taken: false, respawnT: 0 });
       placed++;
     }
+  }
+
+  // 枪械制作:旧岛/第二岛都有工作台和必要材料,靠近后按 E 制作。
+  const workbenches = [];
+  const gunParts = [];
+  const gunPartNames = { scrap: '废铁', gear: '机件', powder: '火药材料', lead: '铅块', casing: '铜壳', primer: '引火帽' };
+  const makeNodeMat = (c) => {
+    const m = new THREE.MeshBasicNodeMaterial();
+    m.colorNode = marineSkin(c);
+    return m;
+  };
+  function drySpotNear(cx, cz, isle, heightFn) {
+    let best = { x: cx, z: cz, y: heightFn(cx, cz) };
+    for (let i = 0; i < 80; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 8 + Math.random() * isle.R * 0.28;
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      const y = heightFn(x, z);
+      if (y > 1.2 && y < 32) return { x, z, y };
+      if (y > best.y) best = { x, z, y };
+    }
+    best.y = Math.max(1.2, best.y);
+    return best;
+  }
+  function addWorkbench(label, cx, cz, isle, heightFn) {
+    const spot = drySpotNear(cx, cz, isle, heightFn);
+    const group = new THREE.Group();
+    const woodMat = makeNodeMat(vec3(0.34, 0.22, 0.13));
+    const metalMat = makeNodeMat(vec3(0.30, 0.32, 0.34));
+    const top = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.16, 1.25), woodMat);
+    top.position.y = 0.86;
+    group.add(top);
+    for (const sx of [-0.9, 0.9]) for (const sz of [-0.42, 0.42]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.82, 0.13), woodMat);
+      leg.position.set(sx, 0.40, sz);
+      group.add(leg);
+    }
+    const vice = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.28), metalMat);
+    vice.position.set(-0.62, 1.02, -0.18);
+    group.add(vice);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.05, 8), metalMat);
+    barrel.rotation.z = Math.PI / 2;
+    barrel.position.set(0.32, 1.06, 0.16);
+    group.add(barrel);
+    group.position.set(spot.x, spot.y, spot.z);
+    group.rotation.y = Math.atan2(isle.x - spot.x, isle.z - spot.z);
+    scene.add(group);
+    workbenches.push({ label, x: spot.x, z: spot.z, y: spot.y, mesh: group });
+  }
+  const oldWorkbenchSeed = drySpotNear(fire.x + 9, fire.z + 4, ISLAND, islandHeightAt);
+  addWorkbench('旧岛工作台', oldWorkbenchSeed.x, oldWorkbenchSeed.z, ISLAND, islandHeightAt);
+  const newWorkbenchBase = relicSpots.camp || { x: NEW_ISLAND.x + 58, z: NEW_ISLAND.z - 36 };
+  addWorkbench('雨林工作台', newWorkbenchBase.x + 10, newWorkbenchBase.z - 8, NEW_ISLAND, newIslandHeightAt);
+  {
+    const mats = {
+      scrap: { mat: makeNodeMat(vec3(0.34, 0.36, 0.36)), geo: new THREE.BoxGeometry(0.55, 0.12, 0.32), lift: 0.08 },
+      gear: { mat: makeNodeMat(vec3(0.46, 0.42, 0.30)), geo: new THREE.TorusGeometry(0.18, 0.045, 8, 16), lift: 0.16 },
+      powder: { mat: makeNodeMat(vec3(0.42, 0.20, 0.13)), geo: new THREE.CylinderGeometry(0.16, 0.18, 0.38, 9), lift: 0.20 },
+      lead: { mat: makeNodeMat(vec3(0.28, 0.30, 0.34)), geo: new THREE.IcosahedronGeometry(0.22, 0), lift: 0.16 },
+      casing: { mat: makeNodeMat(vec3(0.72, 0.48, 0.20)), geo: new THREE.CylinderGeometry(0.08, 0.08, 0.32, 10), lift: 0.18 },
+      primer: { mat: makeNodeMat(vec3(0.85, 0.70, 0.36)), geo: new THREE.BoxGeometry(0.26, 0.08, 0.20), lift: 0.08 },
+    };
+    function scatterGunParts(isle, heightFn, counts) {
+      for (const kind of Object.keys(counts)) {
+        let placed = 0, guard = 0;
+        while (placed < counts[kind] && guard++ < 3000) {
+          const a = Math.random() * Math.PI * 2;
+          const r = isle.R * (0.24 + Math.random() * 0.58);
+          const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+          const y = heightFn(x, z);
+          if (y < 1.0 || y > 46) continue;
+          const def = mats[kind];
+          const mesh = new THREE.Mesh(def.geo, def.mat);
+          mesh.position.set(x, y + def.lift, z);
+          mesh.rotation.set(Math.random() * 0.4, Math.random() * Math.PI, Math.random() * 0.35);
+          mesh.scale.setScalar(0.9 + Math.random() * 0.55);
+          scene.add(mesh);
+          gunParts.push({ kind, name: gunPartNames[kind], mesh, x, z, taken: false, respawnT: 0 });
+          placed++;
+        }
+      }
+    }
+    scatterGunParts(ISLAND, islandHeightAt, { scrap: 5, gear: 3, powder: 4, lead: 4, casing: 4, primer: 3 });
+    scatterGunParts(NEW_ISLAND, newIslandHeightAt, { scrap: 8, gear: 5, powder: 7, lead: 7, casing: 8, primer: 5 });
+  }
+
+  // 盗墓装备材料:墓穴彩蛋触发后用得上,但材料一开始就在海滩可捡。
+  const tombMaterials = [];
+  const tombMaterialNames = { tombIron: '铁锭', tombLamp: '灯油罐', tombHandle: '硬木柄' };
+  {
+    const defs = {
+      tombIron: { mat: makeNodeMat(vec3(0.46, 0.48, 0.46)), geo: new THREE.BoxGeometry(0.62, 0.18, 0.32), lift: 0.10 },
+      tombLamp: { mat: makeNodeMat(vec3(0.78, 0.60, 0.25)), geo: new THREE.CylinderGeometry(0.15, 0.18, 0.34, 10), lift: 0.18 },
+      tombHandle: { mat: makeNodeMat(vec3(0.36, 0.22, 0.12)), geo: new THREE.CylinderGeometry(0.055, 0.07, 0.82, 8), lift: 0.12 },
+    };
+    function scatterTombMaterials(isle, heightFn, counts) {
+      for (const kind of Object.keys(counts)) {
+        let placed = 0, guard = 0;
+        while (placed < counts[kind] && guard++ < 3600) {
+          const a = Math.random() * Math.PI * 2;
+          const r = isle.R * (0.70 + Math.random() * 0.23);
+          const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+          const y = heightFn(x, z);
+          if (y < 0.25 || y > 3.2) continue;
+          const def = defs[kind];
+          const mesh = new THREE.Mesh(def.geo, def.mat);
+          mesh.position.set(x, y + def.lift, z);
+          mesh.rotation.set(Math.random() * 0.35, Math.random() * Math.PI, Math.random() * 0.35);
+          scene.add(mesh);
+          tombMaterials.push({ kind, name: tombMaterialNames[kind], mesh, x, z, taken: false });
+          placed++;
+        }
+      }
+    }
+    scatterTombMaterials(ISLAND, islandHeightAt, { tombIron: 4, tombLamp: 2, tombHandle: 2 });
+    scatterTombMaterials(NEW_ISLAND, newIslandHeightAt, { tombIron: 5, tombLamp: 3, tombHandle: 3 });
+  }
+
+  // 趣味物件:贝壳号角/回声鼓/夜光蘑菇/漂流瓶/萤火灯/潮汐石/远岛古遗迹,都是可见可互动的小事件。
+  const curios = [];
+  {
+    const shellMat = makeNodeMat(vec3(0.92, 0.76, 0.58));
+    const drumMat = makeNodeMat(vec3(0.32, 0.18, 0.10));
+    const glowMat = makeNodeMat(vec3(0.18, 1.15, 0.72));
+    const bottleMat = makeNodeMat(vec3(0.45, 0.86, 0.78));
+    const corkMat = makeNodeMat(vec3(0.45, 0.27, 0.12));
+    const tideMat = makeNodeMat(vec3(0.22, 0.38, 0.48));
+    const pearlMat = makeNodeMat(vec3(1.08, 0.96, 0.82));
+    const tearMat = makeNodeMat(vec3(0.14, 0.70, 1.18));
+    const pyramidMat = makeNodeMat(vec3(0.52, 0.47, 0.36));
+    const goldMat = makeNodeMat(vec3(1.05, 0.76, 0.24));
+    const obsidianMat = makeNodeMat(vec3(0.055, 0.045, 0.075));
+    const boneMat = makeNodeMat(vec3(0.86, 0.82, 0.68));
+    const ropeTieMat = makeNodeMat(vec3(0.54, 0.42, 0.25));
+    const charMat = makeNodeMat(vec3(0.055, 0.045, 0.035));
+    const leafMat = makeNodeMat(vec3(0.10, 0.42, 0.18));
+    const shadowMat = (() => { const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false }); m.colorNode = vec3(0.0, 0.0, 0.0); m.opacity = 0.26; return m; })();
+    function addCurio(kind, label, x, z, y, mesh) {
+      mesh.position.set(x, y, z);
+      if (kind === 'mushroom' || kind === 'firefly') mesh.visible = false;
+      scene.add(mesh);
+      curios.push({ kind, label, x, z, y, mesh, taken: false, respawnT: 0, cd: 0, baseY: y, score: 0, hitT: 0, challengeT: 0 });
+    }
+    function shoreSpot(isle, heightFn) {
+      for (let tries = 0; tries < 200; tries++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = isle.R * (0.75 + Math.random() * 0.25);
+        const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+        const y = heightFn(x, z);
+        if (y > 0.15 && y < 2.4) return { x, z, y };
+      }
+      return drySpotNear(isle.x, isle.z, isle, heightFn);
+    }
+    function jungleSpot(isle, heightFn) {
+      for (let tries = 0; tries < 260; tries++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = isle.R * (0.28 + Math.random() * 0.48);
+        const x = isle.x + Math.cos(a) * r, z = isle.z + Math.sin(a) * r;
+        const y = heightFn(x, z);
+        if (y > 2.0 && y < 24) return { x, z, y };
+      }
+      return drySpotNear(isle.x, isle.z, isle, heightFn);
+    }
+    function addContactShadow(g, r = 0.55) {
+      const sh = new THREE.Mesh(new THREE.CircleGeometry(r, 24), shadowMat);
+      sh.rotation.x = -Math.PI / 2;
+      sh.position.y = 0.012;
+      g.add(sh);
+      return sh;
+    }
+    function makeShell() {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.56, 9), shellMat);
+      body.rotation.set(0, 0, Math.PI / 2);
+      const lip = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.035, 8, 18), shellMat);
+      lip.position.x = -0.27;
+      lip.rotation.y = Math.PI / 2;
+      g.add(body, lip);
+      return g;
+    }
+    function makeDrum() {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 0.54, 10), drumMat);
+      body.position.y = 0.27;
+      const hide = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.035, 10), shellMat);
+      hide.position.y = 0.56;
+      g.add(body, hide);
+      return g;
+    }
+    function makeMushroom() {
+      const g = new THREE.Group();
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.07, 0.28, 8), shellMat);
+      stem.position.y = 0.14;
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 8), glowMat);
+      cap.scale.y = 0.42;
+      cap.position.y = 0.31;
+      g.add(stem, cap);
+      return g;
+    }
+    function makeBottle() {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 0.55, 10), bottleMat);
+      body.rotation.z = Math.PI / 2;
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.24, 8), bottleMat);
+      neck.rotation.z = Math.PI / 2;
+      neck.position.x = 0.34;
+      const cork = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.08, 8), corkMat);
+      cork.rotation.z = Math.PI / 2;
+      cork.position.x = 0.49;
+      g.add(body, neck, cork);
+      return g;
+    }
+    function makeFireflyLantern() {
+      const g = new THREE.Group();
+      const jar = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), bottleMat);
+      jar.scale.y = 1.25;
+      jar.position.y = 0.35;
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.08, 10), corkMat);
+      cap.position.y = 0.66;
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), glowMat);
+      glow.position.y = 0.36;
+      g.add(jar, cap, glow);
+      return g;
+    }
+    function makeSurvivalCairn() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.55);
+      for (let i = 0; i < 6; i++) {
+        const rock = new THREE.Mesh(new THREE.BoxGeometry(0.30 - i * 0.025, 0.12, 0.22 - i * 0.018), tideMat);
+        rock.position.set((Math.random() - 0.5) * 0.12, 0.06 + i * 0.105, (Math.random() - 0.5) * 0.10);
+        rock.rotation.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI, (Math.random() - 0.5) * 0.35);
+        g.add(rock);
+      }
+      const flag = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.025, 0.11), shellMat);
+      flag.position.set(0.16, 0.76, 0);
+      const lash = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.008, 5, 14), ropeTieMat);
+      lash.position.set(0.02, 0.66, 0);
+      lash.rotation.set(Math.PI / 2, 0.2, 0);
+      g.add(flag, lash);
+      return g;
+    }
+    function makeFishboneVane() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.42);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.04, 0.95, 8), corkMat);
+      pole.position.y = 0.48;
+      const spine = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.035, 0.035), boneMat);
+      spine.position.y = 0.92;
+      for (let i = 0; i < 5; i++) {
+        const rib = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.018, 0.025), boneMat);
+        rib.position.set(-0.18 + i * 0.10, 0.92, 0.075);
+        rib.rotation.y = 0.62;
+        g.add(rib);
+        const rib2 = rib.clone();
+        rib2.position.z = -0.075;
+        rib2.rotation.y = -0.62;
+        g.add(rib2);
+      }
+      const tail = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.24, 3), boneMat);
+      tail.position.set(-0.43, 0.92, 0);
+      tail.rotation.z = Math.PI / 2;
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 4), obsidianMat);
+      eye.position.set(0.40, 0.925, 0.022);
+      const cord = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.006, 5, 12), ropeTieMat);
+      cord.position.y = 0.82;
+      cord.rotation.x = Math.PI / 2;
+      g.add(pole, spine, tail, eye, cord);
+      return g;
+    }
+    function makeTidePool() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.62);
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.055, 8, 24), tideMat);
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = 0.07;
+      const water = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.025, 24), bottleMat);
+      water.position.y = 0.07;
+      for (let i = 0; i < 5; i++) {
+        const shell = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.11, 7), shellMat);
+        const a = i / 5 * Math.PI * 2;
+        shell.position.set(Math.cos(a) * 0.24, 0.11, Math.sin(a) * 0.24);
+        shell.rotation.set(Math.PI / 2, 0, -a);
+        g.add(shell);
+      }
+      for (let i = 0; i < 3; i++) {
+        const fish = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 5), glowMat);
+        fish.scale.set(1.7, 0.35, 0.55);
+        fish.position.set(-0.12 + i * 0.12, 0.105, Math.sin(i * 1.7) * 0.11);
+        fish.rotation.y = i * 0.9;
+        g.add(fish);
+      }
+      const crab = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 5), corkMat);
+      crab.scale.set(1.2, 0.35, 0.8);
+      crab.position.set(0.18, 0.12, -0.17);
+      g.add(crab);
+      g.add(rim, water);
+      return g;
+    }
+    function makeTriClam() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.72);
+      const lower = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 10), shellMat);
+      lower.scale.set(1.18, 0.18, 0.72);
+      lower.position.y = 0.12;
+      lower.rotation.z = -0.06;
+      const upper = new THREE.Mesh(new THREE.SphereGeometry(0.40, 20, 10), shellMat);
+      upper.scale.set(1.12, 0.16, 0.68);
+      upper.position.set(0, 0.34, -0.10);
+      upper.rotation.x = -0.58;
+      const inner = new THREE.Mesh(new THREE.SphereGeometry(0.29, 16, 8), pearlMat);
+      inner.scale.set(1.2, 0.055, 0.72);
+      inner.position.set(0, 0.245, 0.03);
+      for (let i = -3; i <= 3; i++) {
+        const rib = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.60), pearlMat);
+        rib.position.set(i * 0.105, 0.39 - Math.abs(i) * 0.015, -0.09);
+        rib.rotation.x = -0.50;
+        rib.rotation.z = i * 0.055;
+        g.add(rib);
+      }
+      const pearl = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), pearlMat);
+      pearl.position.set(-0.10, 0.30, 0.07);
+      const tear = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), tearMat);
+      tear.scale.set(0.72, 1.35, 0.72);
+      tear.position.set(0.12, 0.31, 0.08);
+      g.add(lower, upper, inner, pearl, tear);
+      return g;
+    }
+    function makeSignalFire() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.72);
+      for (let i = 0; i < 7; i++) {
+        const a = i / 7 * Math.PI * 2;
+        const rock = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.10, 0.14), tideMat);
+        rock.position.set(Math.cos(a) * 0.38, 0.05, Math.sin(a) * 0.38);
+        rock.rotation.y = a;
+        g.add(rock);
+      }
+      for (let i = 0; i < 4; i++) {
+        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.055, 0.70, 8), i % 2 ? corkMat : charMat);
+        log.position.y = 0.18;
+        log.rotation.set(Math.PI / 2, i * Math.PI / 4, 0.7);
+        g.add(log);
+      }
+      const ember = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), goldMat);
+      ember.position.y = 0.22;
+      for (let i = 0; i < 5; i++) {
+        const spark = new THREE.Mesh(new THREE.SphereGeometry(0.025 + i * 0.004, 6, 4), goldMat);
+        spark.position.set(Math.sin(i * 1.8) * 0.11, 0.34 + i * 0.08, Math.cos(i * 1.3) * 0.09);
+        g.add(spark);
+      }
+      const smoke = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 9), shadowMat);
+      smoke.position.y = 0.62;
+      smoke.rotation.y = 0.4;
+      g.add(ember, smoke);
+      return g;
+    }
+    function makeVineSwing() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.62);
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, 1.25, 8), corkMat);
+      branch.position.y = 1.05;
+      branch.rotation.z = Math.PI / 2;
+      const vineA = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 1.05, 6), ropeTieMat);
+      const vineB = vineA.clone();
+      vineA.position.set(-0.32, 0.52, 0);
+      vineB.position.set(0.32, 0.52, 0);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.08, 0.22), corkMat);
+      seat.position.y = 0.08;
+      for (let i = 0; i < 6; i++) {
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 5), leafMat);
+        leaf.scale.set(1.7, 0.24, 0.75);
+        leaf.position.set(-0.45 + i * 0.18, 0.95 + Math.sin(i) * 0.08, (i % 2 ? 0.08 : -0.08));
+        leaf.rotation.set(0.1, i * 0.7, 0.35);
+        g.add(leaf);
+      }
+      const knotA = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.007, 5, 12), ropeTieMat);
+      const knotB = knotA.clone();
+      knotA.position.set(-0.32, 0.15, 0);
+      knotB.position.set(0.32, 0.15, 0);
+      knotA.rotation.x = knotB.rotation.x = Math.PI / 2;
+      g.add(branch, vineA, vineB, seat, knotA, knotB);
+      return g;
+    }
+    function makeCoconutTarget() {
+      const g = new THREE.Group();
+      addContactShadow(g, 0.50);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.95, 8), corkMat);
+      pole.position.y = 0.48;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.025, 8, 24), shellMat);
+      ring.position.y = 0.92;
+      ring.rotation.y = Math.PI / 2;
+      const inner = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.014, 8, 24), goldMat);
+      inner.position.y = 0.92;
+      inner.rotation.y = Math.PI / 2;
+      const center = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 5), goldMat);
+      center.position.set(0.012, 0.92, 0);
+      const shell = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), tideMat);
+      shell.scale.y = 0.78;
+      shell.position.set(0.32, 0.92, 0);
+      const braceA = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.025, 0.66, 6), corkMat);
+      const braceB = braceA.clone();
+      braceA.position.set(-0.17, 0.37, 0);
+      braceB.position.set(0.17, 0.37, 0);
+      braceA.rotation.z = 0.36;
+      braceB.rotation.z = -0.36;
+      g.add(pole, ring, inner, center, shell, braceA, braceB);
+      return g;
+    }
+    function makeTideStone() {
+      const g = new THREE.Group();
+      const rock = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.58, 0.70, 9), tideMat);
+      rock.position.y = 0.35;
+      rock.rotation.y = Math.PI / 9;
+      const face = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.045, 40), tideMat);
+      face.position.set(0, 0.73, 0);
+      face.rotation.x = Math.PI / 2;
+      const outerRing = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.012, 6, 42), glowMat);
+      outerRing.position.y = 0.756;
+      outerRing.rotation.x = Math.PI / 2;
+      const innerRing = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.008, 6, 36), glowMat);
+      innerRing.position.y = 0.762;
+      innerRing.rotation.x = Math.PI / 2;
+      g.add(rock, face, outerRing, innerRing);
+      // 古人刻下的八段月相:圆月/缺月/新月用不同压扁比例表达,围成潮汐盘。
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * Math.PI * 2;
+        const moon = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), shellMat);
+        moon.position.set(Math.cos(a) * 0.245, 0.782, Math.sin(a) * 0.245);
+        const phase = Math.abs(i - 4) / 4;
+        moon.scale.set(0.55 + phase * 0.75, 0.10, 0.42);
+        moon.rotation.y = -a;
+        g.add(moon);
+      }
+      // 细密刻度:像古导航石上的潮汐历,每 6 格加一根长刻痕。
+      for (let i = 0; i < 24; i++) {
+        const a = i / 24 * Math.PI * 2;
+        const long = i % 6 === 0;
+        const notch = new THREE.Mesh(new THREE.BoxGeometry(long ? 0.014 : 0.008, 0.011, long ? 0.058 : 0.035), shellMat);
+        notch.position.set(Math.cos(a) * 0.286, 0.787, Math.sin(a) * 0.286);
+        notch.rotation.y = -a;
+        g.add(notch);
+      }
+      // 三条潮汐波纹刻线,用发光小珠串成弧线;互动时就是这些线"亮起"。
+      for (let band = 0; band < 3; band++) {
+        const z0 = -0.095 + band * 0.095;
+        for (let i = 0; i < 11; i++) {
+          const u = i / 10;
+          const x = (u - 0.5) * 0.38;
+          const z = z0 + Math.sin(u * Math.PI * 2 + band * 0.8) * 0.025;
+          const bead = new THREE.Mesh(new THREE.SphereGeometry(0.010, 6, 4), glowMat);
+          bead.position.set(x, 0.796, z);
+          g.add(bead);
+        }
+      }
+      return g;
+    }
+    function makeWisdomPyramid(kind) {
+      const g = new THREE.Group();
+      const isMirror = kind === 'mirrorPyramid';
+      const baseMat = isMirror ? obsidianMat : pyramidMat;
+      for (let i = 0; i < 5; i++) {
+        const s = 2.2 - i * 0.33;
+        const h = 0.22 + i * 0.035;
+        const step = new THREE.Mesh(new THREE.BoxGeometry(s, h, s), baseMat);
+        step.position.y = 0.10 + i * 0.20;
+        g.add(step);
+      }
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(0.55, 0.42, 4), isMirror ? glowMat : goldMat);
+      cap.position.y = 1.18;
+      cap.rotation.y = Math.PI / 4;
+      g.add(cap);
+      for (let i = 0; i < 4; i++) {
+        const a = i * Math.PI / 2 + Math.PI / 4;
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.04, 0.72), goldMat);
+        slab.position.set(Math.cos(a) * 1.15, 0.36, Math.sin(a) * 1.15);
+        slab.rotation.y = -a;
+        g.add(slab);
+      }
+      if (isMirror) {
+        const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.62, 0.10, 32), tideMat);
+        basin.position.y = 0.24;
+        const water = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.025, 32), glowMat);
+        water.position.y = 0.31;
+        g.add(basin, water);
+      } else {
+        const needle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.055, 0.86, 8), obsidianMat);
+        needle.position.y = 0.78;
+        needle.rotation.z = 0.18;
+        g.add(needle);
+      }
+      g.scale.setScalar(1.15);
+      return g;
+    }
+    function placeRemoteWisdom(isle, heightFn, kind, label, ox, oz) {
+      const x = isle.x + ox;
+      const z = isle.z + oz;
+      const y = heightFn(x, z);
+      addCurio(kind, label, x, z, y + 0.05, makeWisdomPyramid(kind));
+    }
+    for (const item of [
+      { isle: ISLAND, height: islandHeightAt },
+      { isle: NEW_ISLAND, height: newIslandHeightAt },
+      { isle: THIRD_ISLAND, height: (x, z) => remoteIslandHeightAt(THIRD_ISLAND, x, z) },
+      { isle: FOURTH_ISLAND, height: (x, z) => remoteIslandHeightAt(FOURTH_ISLAND, x, z) },
+    ]) {
+      const sh = shoreSpot(item.isle, item.height);
+      addCurio('shell', '贝壳号角', sh.x, sh.z, sh.y + 0.18, makeShell());
+      const bo = shoreSpot(item.isle, item.height);
+      addCurio('bottle', '漂流瓶', bo.x, bo.z, bo.y + 0.16, makeBottle());
+      const ts = shoreSpot(item.isle, item.height);
+      addCurio('tide', '潮汐石', ts.x, ts.z, ts.y, makeTideStone());
+      const tp = shoreSpot(item.isle, item.height);
+      addCurio('tidepool', '潮池', tp.x, tp.z, tp.y + 0.02, makeTidePool());
+      const fv = shoreSpot(item.isle, item.height);
+      addCurio('fishVane', '鱼骨风向标', fv.x, fv.z, fv.y + 0.02, makeFishboneVane());
+      const sf = shoreSpot(item.isle, item.height);
+      addCurio('signalFire', '信号火堆', sf.x, sf.z, sf.y + 0.02, makeSignalFire());
+      const dr = jungleSpot(item.isle, item.height);
+      addCurio('drum', '回声鼓', dr.x, dr.z, dr.y, makeDrum());
+      const ca = jungleSpot(item.isle, item.height);
+      addCurio('cairn', '求生石堆', ca.x, ca.z, ca.y, makeSurvivalCairn());
+      const vs = jungleSpot(item.isle, item.height);
+      addCurio('vineSwing', '藤蔓秋千', vs.x, vs.z, vs.y + 0.02, makeVineSwing());
+      for (let i = 0; i < 3; i++) {
+        const ct = shoreSpot(item.isle, item.height);
+        addCurio('coconutTarget', '椰壳靶架', ct.x, ct.z, ct.y + 0.02, makeCoconutTarget());
+      }
+      if (item.isle === NEW_ISLAND) {
+        for (let i = 0; i < 4; i++) {
+          const cl = shoreSpot(item.isle, item.height);
+          addCurio('triClam', '三角蚌', cl.x, cl.z, cl.y + 0.04, makeTriClam());
+        }
+      }
+      const fl = jungleSpot(item.isle, item.height);
+      addCurio('firefly', '萤火虫灯笼', fl.x, fl.z, fl.y + 0.05, makeFireflyLantern());
+      for (let i = 0; i < 3; i++) {
+        const mu = jungleSpot(item.isle, item.height);
+        addCurio('mushroom', '夜光蘑菇', mu.x, mu.z, mu.y + 0.04, makeMushroom());
+      }
+    }
+    placeRemoteWisdom(THIRD_ISLAND, (x, z) => remoteIslandHeightAt(THIRD_ISLAND, x, z), 'sunPyramid', '日影金字塔', -18, -10);
+    placeRemoteWisdom(THIRD_ISLAND, (x, z) => remoteIslandHeightAt(THIRD_ISLAND, x, z), 'stoneAbacus', '石算盘遗迹', 44, 18);
+    placeRemoteWisdom(FOURTH_ISLAND, (x, z) => remoteIslandHeightAt(FOURTH_ISLAND, x, z), 'mirrorPyramid', '水镜金字塔', 16, -24);
+    placeRemoteWisdom(FOURTH_ISLAND, (x, z) => remoteIslandHeightAt(FOURTH_ISLAND, x, z), 'starDial', '星象石盘', -42, 28);
   }
   const traps = [];
   const trapGeo = (() => {
@@ -3384,8 +4915,181 @@ async function boot() {
     });
     return best;
   }
+  function nearestBuildSite(maxD = 4.6) {
+    let best = null, bd = 1e9;
+    for (const bs of buildSites) {
+      const d = Math.hypot(bs.x - walker.x, bs.z - walker.z);
+      if (d < maxD && d < bd) { bd = d; best = bs; }
+    }
+    return best;
+  }
+  function buildSiteNeed(bs) {
+    return HOUSE_COSTS[Math.min(bs.stage, HOUSE_COSTS.length - 1)];
+  }
+  function houseLevelName(stage) {
+    return stage >= 3 ? '雨林据点' : stage === 2 ? '加固木屋' : stage === 1 ? '小木屋' : '房基';
+  }
+  function houseEffectText(stage) {
+    return stage >= 3
+      ? '满级功能:强效避难 · 快速回血 · 净化中毒 · 大幅降低饥渴消耗'
+      : stage === 2
+        ? '功能:吊床休整 · 集雨补水 · 缓慢回血 · 降低饥渴消耗'
+        : stage === 1
+          ? '功能:遮风休息 · 快速回体力 · 小幅降低饥渴消耗'
+          : '未建成';
+  }
+  function nearestCompletedHouse(maxD = 7.5) {
+    let best = null, bd = 1e9;
+    for (const bs of buildSites) {
+      if (bs.stage <= 0) continue;
+      const d = Math.hypot(bs.x - walker.x, bs.z - walker.z);
+      if (d < maxD && d < bd) { bd = d; best = bs; }
+    }
+    return best;
+  }
+  function activeHouseBonus() {
+    const h = nearestCompletedHouse(8.5);
+    if (!h) return null;
+    return {
+      site: h,
+      drainMul: h.stage >= 3 ? 0.40 : h.stage === 2 ? 0.62 : 0.80,
+      stamina: h.stage >= 3 ? 18 : h.stage === 2 ? 12 : 8,
+      hp: h.stage >= 3 ? 3.0 : h.stage === 2 ? 1.2 : 0,
+      thirst: h.stage >= 2 ? (h.stage >= 3 ? 2.4 : 1.2) : 0,
+      detox: h.stage >= 3 ? 1.9 : h.stage === 2 ? 0.7 : 0,
+    };
+  }
+  function useHouse(bs) {
+    if (bs.stage <= 0) return false;
+    if (bs.useCd > 0) {
+      showToast(houseLevelName(bs.stage) + '还在整理中(' + Math.ceil(bs.useCd) + 's)');
+      return true;
+    }
+    const hpMax = walker.savageRole === 'shield' ? 260 : walker.savageRole === 'swordsman' ? 220 : walker.savageRole === 'poisoner' ? 180 : PLAYER_HP_MAX;
+    const beforeHp = walker.hp, beforeThirst = walker.thirst;
+    walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + (bs.stage >= 3 ? 75 : bs.stage === 2 ? 52 : 34));
+    if (bs.stage >= 2) walker.thirst = Math.min(100, walker.thirst + (bs.stage >= 3 ? 34 : 20));
+    if (bs.stage >= 2) walker.hp = Math.min(hpMax, walker.hp + (bs.stage >= 3 ? 45 : 18));
+    if (bs.stage >= 3) {
+      walker.poisonT = Math.max(0, walker.poisonT - 8);
+      walker.poisonBlurT = Math.max(0, walker.poisonBlurT - 8);
+    }
+    bs.useCd = bs.stage >= 3 ? 12 : 16;
+    startHandAction('pickup');
+    showToast('🏠 ' + houseLevelName(bs.stage) + '休整完成 · 体力恢复'
+      + (walker.thirst > beforeThirst ? ' · 集雨补水' : '')
+      + (walker.hp > beforeHp ? ' · 生命恢复' : '')
+      + (bs.stage >= 3 ? ' · 净化毒性' : ''));
+    return true;
+  }
+  function bestRecallHouse() {
+    let best = null, bd = 1e9;
+    for (const bs of buildSites) {
+      if (bs.stage <= 0) continue;
+      const d = Math.hypot(bs.x - walker.x, bs.z - walker.z);
+      if (d < bd) { bd = d; best = bs; }
+    }
+    return best;
+  }
+  function cancelRecall(reason) {
+    if (!recall.active) return;
+    recall.active = false;
+    recall.t = 0;
+    recall.target = null;
+    recall.lastPing = -1;
+    if (reason) showToast(reason);
+  }
+  function startRecall() {
+    if (!walker.on || walker.inBunker || walker.swordTurret || riding) return;
+    const target = bestRecallHouse();
+    if (!target) { showToast('还没有建成的房子,无法回城'); return; }
+    recall.active = true;
+    recall.t = 0;
+    recall.target = target;
+    recall.lastPing = -1;
+    showToast('按住 3 回城中:5 秒内不要松手,也不要受到攻击');
+  }
+  function finishRecall() {
+    const target = recall.target;
+    if (!target || target.stage <= 0) { cancelRecall('回城目标失效'); return; }
+    const a = Math.atan2(walker.x - target.x, walker.z - target.z) || 0;
+    walker.x = target.x + Math.sin(a) * 2.8;
+    walker.z = target.z + Math.cos(a) * 2.8;
+    walker.y = target.heightFn(walker.x, walker.z);
+    walker.viewYaw = a + Math.PI;
+    walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 35);
+    recall.active = false;
+    recall.t = 0;
+    recall.target = null;
+    recall.lastPing = -1;
+    startHandAction('pickup');
+    showToast('🏠 回城成功:已回到' + target.label + '旁');
+  }
+  function updateBuildSiteMesh(bs) {
+    const k = bs.stage + (bs.paid ? bs.hits / Math.max(1, buildSiteNeed(bs).hits) : 0);
+    bs.mesh.position.y = bs.heightFn(bs.x, bs.z);
+    bs.parts.base.visible = true;
+    bs.parts.base.scale.set(1, 1, 1);
+    bs.parts.posts.forEach((p, i) => {
+      p.visible = bs.stage > 0 || bs.paid || i < 4;
+      p.scale.y = bs.stage === 0 ? 0.45 + Math.min(0.55, k * 0.18) : 1;
+      p.position.y = p.scale.y;
+    });
+    bs.parts.walls.forEach((w, i) => {
+      w.visible = bs.stage >= 1 || (bs.paid && bs.hits > 5 + i);
+      w.scale.y = bs.stage >= 2 ? 1.12 : 1;
+    });
+    bs.parts.roof.visible = bs.stage >= 2 || (bs.stage === 1 && bs.paid && bs.hits > 4);
+    bs.parts.roof.scale.setScalar(bs.stage >= 3 ? 1.18 : 1);
+    bs.parts.loft.visible = bs.stage >= 3;
+  }
+  function workOnBuildSite(bs) {
+    if (bs.stage >= HOUSE_COSTS.length) {
+      showToast(bs.label + '已满级:可作为安全据点');
+      return;
+    }
+    const need = buildSiteNeed(bs);
+    if (!bs.paid) {
+      if (walker.timber < need.timber || walker.rope < need.rope) {
+        showToast(bs.label + '需要木材 ' + need.timber + ' + 绳子 ' + need.rope + ' 才能' + (bs.stage === 0 ? '开工' : '升级'));
+        return;
+      }
+      walker.timber -= need.timber;
+      walker.rope -= need.rope;
+      bs.paid = true;
+      bs.hits = 0;
+      showToast('材料就位:' + bs.label + '开始' + (bs.stage === 0 ? '建房' : '升级') + ' · 按 X 斧子施工 ' + need.hits + ' 次');
+    }
+    startHandAction('chop');
+    walker.shakeT = Math.max(walker.shakeT, 0.10);
+    bs.hits++;
+    if (bs.hits >= need.hits) {
+      bs.stage++;
+      bs.paid = false;
+      bs.hits = 0;
+      updateBuildSiteMesh(bs);
+      showToast('🏠 ' + bs.label + '完成:' + need.name + ' · ' + houseEffectText(bs.stage) + (bs.stage >= HOUSE_COSTS.length ? '' : ' · 可继续升级'));
+    } else {
+      updateBuildSiteMesh(bs);
+      showToast('🪓 ' + bs.label + '施工中 ' + bs.hits + '/' + need.hits);
+    }
+  }
   function chopWithAxe() {
     if (fishing.active) { showToast('正钓着鱼 —— 先按 H 收杆'); return; }
+    const bs = nearestBuildSite();
+    if (bs) { workOnBuildSite(bs); return; }
+    const tox = toxicAnimals.find(an => !an.dead && Math.hypot(an.x - walker.x, an.z - walker.z) < 1.9);
+    if (tox) {
+      if (!walker.savage || !walker.spear) { showToast('毒物太危险 —— 变成野人并用长矛处理,才能安全提毒'); return; }
+      startHandAction('chop');
+      walker.shakeT = Math.max(walker.shakeT, 0.18);
+      tox.dead = true;
+      tox.mesh.visible = false;
+      tox.respawnT = 120;
+      walker.venom++;
+      showToast((tox.kind === 'snake' ? '🐍' : '☠') + ' 你用长矛处理了毒物,提取毒液 +1(Q 可制作毒矛)');
+      return;
+    }
     // 贴身的螃蟹:一斧拍扁
     const crab = animals.find(an => an.kind === 'crab' && !an.dead
       && Math.hypot(an.x - walker.x, an.z - walker.z) < 1.8);
@@ -3409,8 +5113,10 @@ async function boot() {
         tr.data.nuts = 0;
         tr.k = 0;
         fallingTrees.push(tr);
+        const timberGain = tr.data.wood * 4;
         walker.wood += tr.data.wood;
-        showToast('🌲 ' + tr.kind + '轰然倒下 · 木柴 +' + tr.data.wood);
+        walker.timber += timberGain;
+        showToast('🌲 ' + tr.kind + '轰然倒下 · 木柴 +' + tr.data.wood + ' · 木材 +' + timberGain);
       } else {
         showToast('🪓 木屑纷飞 · 再砍 ' + tr.data.hp + ' 下就倒');
       }
@@ -3422,22 +5128,112 @@ async function boot() {
       walker.shakeT = Math.max(walker.shakeT, 0.12);
       st.taken = true;
       st.mesh.visible = false;
-      st.respawnT = 70;
-      walker.stone += 2;                          // 斧劈比手捡多得一块
-      showToast('🪓 一斧劈开石头 · 石块 +2(Q 可打磨箭矢)');
+      st.respawnT = 45;
+      walker.stone += 6;                          // 石块需求大,劈开后一次给足
+      showToast('🪓 一斧劈开石头 · 石块 +6(Q 可打磨箭矢)');
       return;
     }
-    // 岸边大礁石:凿下一块(每块 60 秒可凿一次)
+    // 岸边大礁石:凿下一批石块(每块 45 秒可凿一次)
     const rk = rockData.find(r => r.cd <= 0 && Math.hypot(r.x - walker.x, r.z - walker.z) < 2.8);
     if (rk) {
       startHandAction('chop');
       walker.shakeT = Math.max(walker.shakeT, 0.12);
-      rk.cd = 60;
-      walker.stone++;
-      showToast('🪓 从礁石上凿下一块石头 · 石块 +1');
+      rk.cd = 45;
+      walker.stone += 4;
+      showToast('🪓 从礁石上凿下一批石头 · 石块 +4');
       return;
     }
     showToast('附近没有可砍的树、石头或螃蟹 —— 走近了再按 X');
+  }
+  function nearestRockForBoulders() {
+    let best = null, bd = 1e9;
+    for (const r of rockData) {
+      const d = Math.hypot(r.x - walker.x, r.z - walker.z);
+      if (d < 3.2 && d < bd) { bd = d; best = r; }
+    }
+    return best;
+  }
+  function startCutBoulders() {
+    if (!walker.savage || !walker.catapult) {
+      showToast('只有掌握投石机的野人,才懂得把海边礁石切成巨石弹');
+      return;
+    }
+    if (walker.cuttingRock) {
+      showToast('正在切割巨石弹…… 还剩 ' + Math.ceil(walker.cuttingRock.t) + ' 秒');
+      return;
+    }
+    const rk = nearestRockForBoulders();
+    if (!rk) { showToast('走到海边大块礁石旁,再按 N 切割投石机巨石弹'); return; }
+    if (rk.cutCd > 0) { showToast('这块礁石刚被切过,还要冷却 ' + Math.ceil(rk.cutCd) + ' 秒'); return; }
+    if (walker.coconut >= 10) {
+      walker.coconut -= 10;
+      showToast('🥥 你备下 10 个椰子,开始两分钟切割巨石弹……');
+    } else if (walker.godMeat >= 1) {
+      walker.godMeat--;
+      showToast('⚡ 你吃下一块神肉撑住体能,开始两分钟切割巨石弹……');
+    } else {
+      showToast('切割巨石弹极耗体力:每 2 块至少需要 10 个椰子,或 1 块神肉');
+      return;
+    }
+    walker.cuttingRock = { rock: rk, t: 120 };
+    startHandAction('chop');
+  }
+  function makeCatapultMesh() {
+    const mesh = new THREE.Mesh(catapultGeo, catapultMat);
+    mesh.scale.set(1.7, 1.7, 1.7);
+    mesh.visible = true;
+    scene.add(mesh);
+    return mesh;
+  }
+  function nearestPlacedCatapult(range = 5.0) {
+    let best = null, bd = 1e9;
+    for (const cp of placedCatapults) {
+      if (cp.carried) continue;
+      const d = Math.hypot(cp.x - walker.x, cp.z - walker.z);
+      if (d < range && d < bd) { bd = d; best = cp; }
+    }
+    return best;
+  }
+  function createCatapultAt(x, z, dir) {
+    const y = groundHeightAt(x, z);
+    const cp = { x, z, y, dir, carried: false, mesh: makeCatapultMesh() };
+    cp.mesh.position.set(x, y + 0.05, z);
+    cp.mesh.rotation.y = dir;
+    placedCatapults.push(cp);
+    return cp;
+  }
+  function placeOrCarryCatapult() {
+    if (!walker.catapult) return false;
+    if (walker.carryingCatapult) {
+      const cp = walker.carryingCatapult;
+      const x = walker.x + Math.sin(walker.viewYaw) * 1.8;
+      const z = walker.z + Math.cos(walker.viewYaw) * 1.8;
+      const h = groundHeightAt(x, z);
+      if (h < -0.6) { showToast('水太深,投石机不能放在这里'); return true; }
+      cp.x = x; cp.z = z; cp.y = h; cp.dir = walker.viewYaw; cp.carried = false;
+      cp.mesh.position.set(x, h + 0.05, z);
+      cp.mesh.rotation.set(0, cp.dir, 0);
+      cp.mesh.scale.set(1.7, 1.7, 1.7);
+      walker.carryingCatapult = null;
+      showToast('🪨 投石机已放稳:站在旁边按空格发射巨石弹');
+      return true;
+    }
+    const near = nearestPlacedCatapult(3.2);
+    if (near) {
+      near.carried = true;
+      walker.carryingCatapult = near;
+      showToast('你扛起沉重的投石机,默认只能走路;吞下神肉后搬运也能疾跑');
+      return true;
+    }
+    if (placedCatapults.length === 0) {
+      const x = walker.x + Math.sin(walker.viewYaw) * 1.8;
+      const z = walker.z + Math.cos(walker.viewYaw) * 1.8;
+      if (groundHeightAt(x, z) < -0.6) { showToast('水太深,投石机不能放在这里'); return true; }
+      createCatapultAt(x, z, walker.viewYaw);
+      showToast('🪨 野人投石机架在地上了:靠近炮台按空格发射,E 可搬运');
+      return true;
+    }
+    return false;
   }
   function nearestStone() {
     let best = null, bd = 1e9;
@@ -3473,11 +5269,20 @@ async function boot() {
       if (ft.k >= 1) { d.gone = true; d.falling = false; fallingTrees.splice(i, 1); }
     }
   }
-  // 泰坦碾压:全岛树木压折、石块尽收(骑乘碾过岛心触发)
-  function crushIsland() {
+  // 泰坦碾压:岛上树木压折、石块与普通散落收集品尽收(盗墓材料保留手动拾取)
+  function crushIsland(isle = ISLAND) {
     let wood = 0, stone = 0;
+    const loot = {};
+    let lootTotal = 0;
+    const isRemote = isle === THIRD_ISLAND || isle === FOURTH_ISLAND;
+    const inCrushRange = (x, z, pad = 1.08) => Math.hypot(x - isle.x, z - isle.z) < isle.R * pad;
+    const addLoot = (label, n = 1) => {
+      loot[label] = (loot[label] || 0) + n;
+      lootTotal += n;
+    };
     palmData.forEach((pd, i) => {
       if (pd.gone || pd.falling) return;
+      if (!inCrushRange(pd.x, pd.z)) return;
       pd.falling = true;
       pd.nuts = 0;
       wood += pd.wood;
@@ -3485,19 +5290,59 @@ async function boot() {
     });
     canopyData.forEach((cd, i) => {
       if (cd.gone || cd.falling) return;
+      if (!inCrushRange(cd.x, cd.z)) return;
       cd.falling = true;
       wood += cd.wood;
       fallingTrees.push({ data: cd, idx: i, mesh: canopies, kind: '阔叶树', k: -Math.random() * 0.4 });
     });
     for (const st of stones) {
-      if (!st.taken) { st.taken = true; st.mesh.visible = false; st.respawnT = 70; stone++; }
+      if (!inCrushRange(st.x, st.z)) continue;
+      if (!st.taken) { st.taken = true; st.mesh.visible = false; st.respawnT = 45; stone += 3; }
     }
     for (const rk of rockData) {
-      if (rk.cd <= 0) { rk.cd = 60; stone++; }
+      if (!inCrushRange(rk.x, rk.z, 1.25)) continue;
+      if (rk.cd <= 0) { rk.cd = 45; stone += 4; }
+    }
+    for (const dw of driftwoods) {
+      if (!dw.taken && inCrushRange(dw.x, dw.z, 1.12)) {
+        dw.taken = true;
+        dw.mesh.visible = false;
+        dw.respawnT = 90;
+        wood += 1;
+        addLoot('漂木');
+      }
+    }
+    for (const rp of ropes) {
+      if (!rp.taken && inCrushRange(rp.x, rp.z, 1.12)) {
+        rp.taken = true;
+        rp.mesh.visible = false;
+        rp.respawnT = 120;
+        walker.rope += 1;
+        addLoot('绳子');
+      }
+    }
+    for (const gp of gunParts) {
+      if (!gp.taken && inCrushRange(gp.x, gp.z, 1.12)) {
+        gp.taken = true;
+        gp.mesh.visible = false;
+        gp.respawnT = 90;
+        walker[gp.kind] = (walker[gp.kind] || 0) + 1;
+        addLoot(gp.name || gunPartNames[gp.kind] || gp.kind);
+      }
+    }
+    if (isRemote) {
+      wood += Math.round(isle.R * 1.6);
+      stone += Math.round(isle.R * 1.25);
     }
     walker.wood += wood;
     walker.stone += stone;
-    showToast('💥 泰坦之躯碾过全岛!树林成片倒伏 · 木柴 +' + wood + ' · 石块 +' + stone);
+    const featuredLoot = ['废铁', '铜壳', '铅块', '绳子']
+      .filter(name => loot[name])
+      .map(name => name + ' +' + loot[name])
+      .join(' · ');
+    showToast('💥 泰坦之躯碾过' + (isle.name || (isle === NEW_ISLAND ? '第二岛' : '旧岛'))
+      + '!树林岩石和散落物被卷走 · 木柴 +' + wood + ' · 石块 +' + stone
+      + (lootTotal ? ' · 散落物 +' + lootTotal + (featuredLoot ? '(' + featuredLoot + ')' : '') : ''));
   }
 
   // ---- 捕蟹笼:放进浅水,约 40 秒后有蟹,收获后笼子继续工作 ----
@@ -3549,22 +5394,23 @@ async function boot() {
   }
   // 密语召唤(M 键):念出「河豚和黄瓜」→ 直接唤来一只已吞噬 3 只同类的驯服泰坦(差 1 只即终极)
   function tryFusionCode() {
-    const code = window.prompt('低声念出那句古老的密语……(提示:河里的刺球 和 藤上的青瓜)');
+    const code = window.prompt('');
     if (code === null) return;
-    if (code.trim().replace(/\s+/g, '') !== '河豚和黄瓜') { showToast('海面毫无反应…… 密语不对'); return; }
+    if (code.trim().replace(/\s+/g, '') !== '河豚和黄瓜') return;
     if (activeTitans().length >= TITAN_MAX) { showToast('海面上已有 5 只泰坦在游弋,容不下更多了'); return; }
     summonGiant();
     const g = titans[titans.length - 1];
     if (!g || g.state !== 'rage') return;      // 没召出来(满员)
     g.state = 'tamed';
     g.devours = 3;
+    g.devouredTypes = new Set(TITAN_TYPES.slice(0, 3));
     g.fused = true;
     g.scaleBoost = 1 + 3 * 0.45;
     g.mesh.scale.setScalar(g.sp.scale * g.scaleBoost);
     g.maxHp = g.sp.hp * 4; g.hp = g.maxHp;
     titansTamed++;
     checkTitanEnding();
-    showToast('🌊 密语生效!' + g.sp.name + '破水而出 —— 它已吞噬 3 只同类(3/4),对你俯首称臣!再吞 1 只即成终极虚空泰坦 · 按 V 骑乘');
+    showToast('🌊 密语生效!' + g.sp.name + '破水而出 —— 它已吞噬 3 种泰坦(3/4),对你俯首称臣!再吞 1 种不同泰坦即成终极形态 · 按 V 骑乘');
     autoDevourTamed();              // 若已有多只认主,最大的自动开吞(提示以此为准)
   }
   const bobber = new THREE.Mesh(
@@ -3606,11 +5452,48 @@ async function boot() {
       if (canSummon) { summonGiant(); return; }
       showToast('海面上已有 5 只泰坦在游弋 —— 先处置它们再钓');
     }
-    if (Math.random() < 0.12 && canSummon) { summonGiant(); return; }
-    const two = Math.random() < 0.3;
-    walker.meat += two ? 2 : 1;
+    if (Math.random() < 0.10 && canSummon) { summonGiant(); return; }
+    const roll = Math.random();
+    let meat = 1, msg = '🐟 钓上一条肥美海鱼 · 肉 +1';
+    if (roll < 0.18) {
+      meat = 2;
+      msg = '🐟 一杆双鱼!肉 +2';
+    } else if (roll < 0.34) {
+      meat = 1;
+      msg = '🐠 钓上一群银鳞小鱼 · 肉 +1';
+    } else if (roll < 0.50) {
+      meat = 2;
+      msg = '🐟 钓上海鲈鱼 · 肉 +2';
+    } else if (roll < 0.64) {
+      meat = 2;
+      msg = '🐡 钓上礁边石斑鱼 · 肉 +2';
+    } else if (roll < 0.76) {
+      meat = 3;
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 15);
+      msg = '🐟 钓上银背金枪鱼 · 肉 +3 · 体力 +15';
+    } else if (roll < 0.88) {
+      meat = 2;
+      walker.thirst = Math.max(0, walker.thirst - 4);
+      msg = '🐍 钓上深海海鳗 · 肉 +2 · 口渴 -4';
+    } else if (roll < 0.96) {
+      meat = 1;
+      if (walker.savage) walker.venom++;
+      msg = '☠ 钓上鼓胀河豚 · 肉 +1' + (walker.savage ? ' · 毒液 +1' : ' · 非野人不会取毒');
+    } else if (roll < 0.985) {
+      meat = 4;
+      msg = '🦈 钓上幼年鲨鱼!肉 +4';
+    } else {
+      meat = 2;
+      walker.stamina = Math.max(0, walker.stamina - 50);
+      walker.shakeT = Math.max(walker.shakeT, 1.0);
+      fishing.active = false;
+      bobber.visible = fishLine.visible = false;
+      damageWalker(30, '被成年鲨鱼拖入浪里');
+      msg = '🦈 成年鲨鱼猛拽鱼线!破坏力仅次于虚空泰坦 · 生命 -30 · 体力 -50 · 鱼线断了 · 肉 +2';
+    }
+    walker.meat += meat;
     startHandAction('pickup');
-    showToast(two ? '🐟 一杆双鱼!肉 +2' : '🐟 钓上一条肥美海鱼 · 肉 +1');
+    showToast(msg);
   }
   function updateFishing(t, dt) {
     if (!fishing.active) return;
@@ -3654,6 +5537,7 @@ async function boot() {
     { name: '腐绿泰坦', color: [0.18, 0.30, 0.12], scale: 24, hp: 35, speed: 8,  thrash: 0.6, harvests: 3, tameMul: 0.9, w: 16 },
     { name: '黄金泰坦', color: [0.58, 0.42, 0.14], scale: 28, hp: 60, speed: 11, thrash: 0.8, harvests: 6, tameMul: 0.5, w: 6 },
   ];
+  const TITAN_TYPES = TITAN_SPECIES.map(sp => sp.name);
   const titans = [];              // 同时在场的泰坦(最多 5 只)
   let riding = false;
   let riddenTitan = null;         // 当前骑的是哪一只
@@ -3664,6 +5548,14 @@ async function boot() {
   const TITAN_MAX = 5;
   const activeTitans = () => titans.filter(g => g.state !== 'gone');
   const myTamedTitan = () => titans.find(g => g.state === 'tamed') || null;
+  const titanBodyRadius = (g) => 7 * g.sp.scale * (g.scaleBoost || 1);   // 鲸体模型半长,用于“模型边缘”触岛判定
+  const devouredUniqueCount = (g) => g.devouredTypes ? g.devouredTypes.size : 0;
+  const canTitanReachSecond = (g) => !!g && (g.ultimate || titansTamed >= 3 || (g.devours || 0) >= 3 || devouredUniqueCount(g) >= 3);
+  function recordDevouredTitan(mount, name) {
+    if (!mount.devouredTypes) mount.devouredTypes = new Set();
+    if (TITAN_TYPES.includes(name)) mount.devouredTypes.add(name);
+    return devouredUniqueCount(mount);
+  }
   function checkTitanEnding() {
     if (endingShown) return;
     if (titansTamed >= TITAN_MAX) {
@@ -3687,14 +5579,17 @@ async function boot() {
       createWhaleGeometry(),
       (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(sp.color[0], sp.color[1], sp.color[2])); return m; })());
     mesh.scale.setScalar(sp.scale);         // 鲸体 ~14 m × scale ≈ 280~390 m
+    const sourceX = fishing.active ? fishing.x : walker.x;
+    const sourceZ = fishing.active ? fishing.z : walker.z;
+    const homeIsland = Math.hypot(sourceX - NEW_ISLAND.x, sourceZ - NEW_ISLAND.z) < NEW_ISLAND.R * 1.6 ? NEW_ISLAND : ISLAND;
     const a = Math.random() * Math.PI * 2;
-    const R = ISLAND.R + 45;
+    const R = homeIsland.R + 45;
     const g = {
-      mesh, sp, x: ISLAND.x + Math.cos(a) * R, z: ISLAND.z + Math.sin(a) * R, y: -6,
+      mesh, sp, homeIsland, x: homeIsland.x + Math.cos(a) * R, z: homeIsland.z + Math.sin(a) * R, y: -6,
       dir: -a, state: 'rage', hp: sp.hp, maxHp: sp.hp, tame: 0,
       thrashT: 6, breachT: 10 + Math.random() * 8, breachK: -1,
       harvests: sp.harvests, deadK: 0, sinkK: -1,
-      attackT: 9, attackK: -1, atkX: 0, atkZ: 0, crushed: false,
+      attackT: 9, attackK: -1, atkX: 0, atkZ: 0, atkKind: '', crushed: false,
       fused: false, scaleBoost: 1, devours: 0, ultimate: false,
       ringR: 45 + activeTitans().length * 14,   // 各守一圈,互不重叠
     };
@@ -3705,7 +5600,7 @@ async function boot() {
     walker.shakeT = 1.2;
     showToast(myTamedTitan()
       ? '🌊 又一只虚空泰坦 · ' + sp.name + ' 被惊动了!按 E 指挥你的泰坦迎战,或亲自驯服(' + activeTitans().length + '/' + TITAN_MAX + ')'
-      : '🌊 海面炸开!虚空泰坦 · ' + sp.name + ' 被你的鱼钩惊动了 —— 近水按 E 驯服,或张弓猎杀(' + activeTitans().length + '/' + TITAN_MAX + ')');
+      : '🌊 海面炸开!虚空泰坦 · ' + sp.name + ' 被你的鱼钩惊动了 —— 它正在' + (homeIsland === NEW_ISLAND ? '第二岛' : '旧岛') + '近海巡游,近水按 E 驯服或张弓猎杀(' + activeTitans().length + '/' + TITAN_MAX + ')');
   }
   function rideGiant(gt) {
     const g = gt || myTamedTitan();
@@ -3716,28 +5611,56 @@ async function boot() {
     g.breachK = -1;
     g.mesh.rotation.x = 0;
     g.crushed = false;
+    g.crushedIslands = new Set();
     handsGroup.visible = false;
     $('island-hud').classList.remove('show');
     $('xhair').classList.remove('show');
     controls.enabled = false;
     giantRide.speed = 10;
     showToast('🐋 你跃上' + g.sp.name + '之背!W/S 控速 · A/D 转向'
-      + (g.ultimate ? ' · 终极形态,全速横渡新海域!' : g.fused ? ' · 融合泰坦可横渡深海 —— 西南有新海域!' : ' · 碾过岛屿收木石') + ' · 岛边按 V 下来');
+      + (canTitanReachSecond(g) ? ' · 可横渡深海前往第二岛!' : ' · 泰坦不足 3 只/吞噬不足 3 只,暂不能去第二岛')
+      + ' · 岛边按 V 下来');
   }
   function dismountGiant() {
     const g = riddenTitan;
     if (!g) { riding = false; return; }
-    const nearOld = Math.hypot(g.x - ISLAND.x, g.z - ISLAND.z) <= ISLAND.R + 110;
-    const nearNew = Math.hypot(g.x - NEW_ISLAND.x, g.z - NEW_ISLAND.z) <= NEW_ISLAND.R + 130;
-    if (!nearOld && !nearNew) {
+    const bodyR = titanBodyRadius(g);
+    const islandInfo = (isle) => {
+      const centerD = Math.hypot(g.x - isle.x, g.z - isle.z);
+      return {
+        isle,
+        centerD,
+        norm: centerD / Math.max(1, isle.R),
+        edge: centerD - (isle.R * 1.35 + bodyR)
+      };
+    };
+    const oldInfo = islandInfo(ISLAND);
+    const newInfo = islandInfo(NEW_ISLAND);
+    const thirdInfo = islandInfo(THIRD_ISLAND);
+    const fourthInfo = islandInfo(FOURTH_ISLAND);
+    const LOCK_DIST = Math.max(120, bodyR * 0.18);
+    const hasRemoteCompass = !!relics.yinyangCompass;
+    const remoteTouch = [thirdInfo, fourthInfo].some(v => v.edge <= LOCK_DIST);
+    const candidates = [oldInfo, newInfo]
+      .concat(hasRemoteCompass ? [thirdInfo, fourthInfo] : [])
+      .filter(v => v.edge <= LOCK_DIST);
+    if (!candidates.length) {
+      if (remoteTouch && !hasRemoteCompass) {
+        showToast('远岛边缘就在巨兽身下,但泰坦找不到上岸潮线 —— 先去墓穴取阴阳罗盘');
+        return;
+      }
       showToast('巨兽不肯在深海放你下来 —— 先游到某座岛附近');
       return;
     }
+    // 巨兽很大时模型边缘可能同时“碰到”两座岛;优先锁定中心距离更近的岛,避免新岛边上误回旧岛。
+    candidates.sort((a, b) => a.norm - b.norm);
+    const targetIsland = candidates[0].isle;
     // 从巨兽位置向最近岛心找第一块干滩
-    const cx = nearNew && (!nearOld || Math.hypot(g.x - NEW_ISLAND.x, g.z - NEW_ISLAND.z)
-      < Math.hypot(g.x - ISLAND.x, g.z - ISLAND.z)) ? NEW_ISLAND.x : ISLAND.x;
-    const cz = cx === NEW_ISLAND.x ? NEW_ISLAND.z : ISLAND.z;
-    const hh = cx === NEW_ISLAND.x ? newIslandHeightAt : islandHeightAt;
+    const cx = targetIsland.x;
+    const cz = targetIsland.z;
+    const hh = targetIsland === NEW_ISLAND ? newIslandHeightAt
+      : targetIsland === ISLAND ? islandHeightAt
+        : (x, z) => remoteIslandHeightAt(targetIsland, x, z);
     const dx = cx - g.x, dz = cz - g.z;
     const dd = Math.hypot(dx, dz) || 1;
     let lx = cx, lz = cz;
@@ -3758,39 +5681,99 @@ async function boot() {
   }
   // 骑乘驾驶:未融合的泰坦不敢远离家园海域
   function rideStep(g, t, dt, wx) {
+    g.rideAtkCd = Math.max(0, (g.rideAtkCd || 0) - dt);
     const turnIn = (driveKeys.right ? 1 : 0) - (driveKeys.left ? 1 : 0);
     g.dir -= turnIn * dt * 0.35;
     const spIn = (driveKeys.throttle ? 1 : 0) - (driveKeys.brake ? 1 : 0);
     giantRide.speed = Math.max(5, Math.min(g.ultimate ? 46 : 34, giantRide.speed + spIn * dt * 12));
     g.x += Math.sin(g.dir) * giantRide.speed * dt;
     g.z += Math.cos(g.dir) * giantRide.speed * dt;
-    if (!g.fused && Math.hypot(g.x - ISLAND.x, g.z - ISLAND.z) > 700) {
+    const home = g.homeIsland || ISLAND;
+    if (!canTitanReachSecond(g) && Math.hypot(g.x - home.x, g.z - home.z) > 700) {
       // 未融合:不敢离开家园海域,折返
-      const bx = ISLAND.x - g.x, bz = ISLAND.z - g.z;
+      const bx = home.x - g.x, bz = home.z - g.z;
       const bd = Math.hypot(bx, bz) || 1;
       g.x += bx / bd * giantRide.speed * dt * 2;
       g.z += bz / bd * giantRide.speed * dt * 2;
       g.dir = Math.atan2(bx, bz);
       if (!rideStep.warned || t - rideStep.warned > 6) {
         rideStep.warned = t;
-        showToast('🌊 泰坦不敢游出这片海域 —— 让它吞噬另一只泰坦,就能横渡深海!');
+        showToast('🌊 泰坦不敢游出这片海域 —— 至少驯服 3 只泰坦,或让这只泰坦吞噬 3 只后,才能前往第二岛!');
       }
     }
     g.y = Math.max(wx - 4, groundHeightAt(g.x, g.z) + 2);   // 可碾上海岸陆地
     g.breachK = -1;
-    // 碾压:巨兽之躯碾过岛屿,压碎全岛树木岩石,尽收木石
-    if (!g.crushed && Math.hypot(g.x - ISLAND.x, g.z - ISLAND.z) < ISLAND.R * 0.9) {
-      g.crushed = true;
-      crushIsland();
+    // 碾压:巨兽之躯碾过任意岛屿,压碎树木岩石,尽收木石
+    if (!g.crushedIslands) g.crushedIslands = new Set();
+    const crushTargets = [
+      ['old', ISLAND],
+      ['second', NEW_ISLAND],
+      ['third', THIRD_ISLAND],
+      ['fourth', FOURTH_ISLAND],
+    ];
+    for (const [key, isle] of crushTargets) {
+      if (!g.crushedIslands.has(key) && Math.hypot(g.x - isle.x, g.z - isle.z) < isle.R * 0.9) {
+        g.crushedIslands.add(key);
+        g.crushed = true;
+        crushIsland(isle);
+        break;
+      }
     }
+    // 相机:随机体实际长度缩放距离 —— 吞噬变大后也能看到完整鲸躯
+    const bodyL = 14 * g.sp.scale * (g.scaleBoost || 1);      // 鲸体实际长度(米)
+    const back = bodyL * 0.5 + 70, up = bodyL * 0.22 + 18;
     camera.position.set(
-      g.x - Math.sin(g.dir) * 90, g.y + 55, g.z - Math.cos(g.dir) * 90);
-    camera.lookAt(g.x + Math.sin(g.dir) * 120, g.y, g.z + Math.cos(g.dir) * 120);
+      g.x - Math.sin(g.dir) * back, g.y + up, g.z - Math.cos(g.dir) * back);
+    camera.lookAt(g.x + Math.sin(g.dir) * bodyL * 0.4, g.y, g.z + Math.cos(g.dir) * bodyL * 0.4);
+  }
+  function titanRideAttack(kind) {
+    const g = riddenTitan;
+    if (!riding || !g || (g.rideAtkCd || 0) > 0) return;
+    const fx = Math.sin(g.dir), fz = Math.cos(g.dir);
+    const cx = g.x + fx * titanBodyRadius(g) * 0.35;
+    const cz = g.z + fz * titanBodyRadius(g) * 0.35;
+    const radius = kind === 'quake' ? 90 : kind === 'bite' ? 48 : 70;
+    let hitSavage = 0;
+    const titanHits = [];
+    for (const sv of savages) {
+      if (sv.dead) continue;
+      if (Math.hypot(sv.x - cx, sv.z - cz) < radius) {
+        sv.hp = 0;
+        markSavageDead(sv, 90);
+        hitSavage++;
+      }
+    }
+    for (const wild of titans) {
+      if (wild === g || wild.state !== 'rage') continue;
+      if (Math.hypot(wild.x - cx, wild.z - cz) < radius + titanBodyRadius(wild) * 0.35) {
+        const dmg = kind === 'bite' ? 8 : kind === 'quake' ? 3 : 5;
+        wild.hp -= dmg;
+        titanHits.push({ name: wild.sp.name, hp: Math.max(0, wild.hp), maxHp: wild.maxHp, dmg });
+        if (kind === 'bite') g.hp = Math.min(g.maxHp, g.hp + 10);
+        if (wild.hp <= 0) killTitan(wild);
+      }
+    }
+    if (kind === 'bite') g.hp = Math.min(g.maxHp, g.hp + (hitSavage > 0 ? 4 : 0));
+    g.rideAtkCd = kind === 'bite' ? 2.4 : kind === 'quake' ? 3.2 : 1.6;
+    walker.shakeT = Math.max(walker.shakeT, kind === 'quake' ? 1.2 : 0.7);
+    const action = kind === 'bite' ? '🐋 泰坦撕咬' : kind === 'quake' ? '💥 泰坦震地' : '🌊 泰坦巨尾横扫';
+    if (hitSavage === 0 && titanHits.length === 0) {
+      showToast(action + '落空了 —— 范围内没有野人或敌对泰坦');
+    } else {
+      const parts = [];
+      if (hitSavage > 0) parts.push('击倒野人 ' + hitSavage + ' 名');
+      if (titanHits.length > 0) {
+        const first = titanHits[0];
+        parts.push('命中泰坦 ' + titanHits.length + ' 只,' + first.name + ' 生命 ' + Math.ceil(first.hp) + '/' + first.maxHp);
+      }
+      if (kind === 'bite') parts.push('自身生命 ' + Math.ceil(g.hp) + '/' + g.maxHp);
+      showToast(action + '命中!' + parts.join(' · '));
+    }
   }
   // ---- 泰坦打斗 + 融合 ----
   // 有驯服泰坦时再钓起一只:按 E 指挥你的泰坦迎战;打斗中野生泰坦不攻击人,
   // 且驯服它成功率大增(见 islandInteract 的 guarded 分支)
-  function startTitanBattle() {
+  function startTitanBattle(auto) {
     const mount = myTamedTitan();
     const wild = titans.find(g => g.state === 'rage');
     if (!mount || !wild) return;
@@ -3798,7 +5781,42 @@ async function boot() {
     titanBattle.hitT = 0;
     titanBattle.mount = mount;
     titanBattle.wild = wild;
-    showToast('⚔ 你的' + mount.sp.name + '咆哮着迎向' + wild.sp.name + '!两兽缠斗 —— 它无暇攻击你,趁机驯服(E)');
+    showToast(auto
+      ? '⚔ 你的' + mount.sp.name + '发现有同类靠近,咆哮着自动迎战' + wild.sp.name + '!它无暇攻击你,趁机驯服(E)'
+      : '⚔ 你的' + mount.sp.name + '咆哮着迎向' + wild.sp.name + '!两兽缠斗 —— 它无暇攻击你,趁机驯服(E)');
+  }
+  // 自动迎战:驯服泰坦发现野生泰坦靠近 → 自动开打;体型明显占优 → 碾压式直接吞噬
+  const autoHunt = { cd: 0 };
+  function autoHuntCheck(t) {
+    if (titanBattle.on || t < autoHunt.cd) return;
+    const mount = myTamedTitan();
+    if (!mount) return;
+    const wild = titans.find(g => g.state === 'rage'
+      && Math.hypot(g.x - mount.x, g.z - mount.z) < 280);
+    if (!wild) return;
+    autoHunt.cd = t + 3;
+    const mySize = mount.sp.scale * (mount.scaleBoost || 1);
+    const itsSize = wild.sp.scale * (wild.scaleBoost || 1);
+    if (mySize > itsSize * 1.15) {
+      // 碾压:体型占优,一口吞下
+      mount.devours = (mount.devours || 0) + 1;
+      const uniqueDevours = recordDevouredTitan(mount, wild.sp.name);
+      mount.scaleBoost = (mount.scaleBoost || 1) + 0.45;
+      mount.fused = true;
+      mount.maxHp += wild.sp.hp; mount.hp = mount.maxHp;
+      scene.remove(wild.mesh);
+      wild.state = 'gone';
+      titansSlain++;
+      checkTitanEnding();
+      walker.shakeT = Math.max(walker.shakeT, 1.4);
+      if (checkUltimate(mount)) {
+        showToast('👑 碾压!你的泰坦一口吞下' + wild.sp.name + ' —— 已吞噬 ' + uniqueDevours + ' 种不同泰坦,白色终极形态觉醒!');
+      } else {
+        showToast('💥 碾压式吞噬!你的泰坦体型占优,一口吞下' + wild.sp.name + '(不同泰坦 ' + uniqueDevours + '/4)');
+      }
+    } else {
+      startTitanBattle(true);
+    }
   }
   function fuseTitans() {
     // 吞噬:打斗分出胜负后,驯服泰坦吞下对手,体型暴涨;连吞 4 只进化为终极虚空泰坦
@@ -3807,6 +5825,7 @@ async function boot() {
     if (!mount || !dead) return;
     const eatenName = dead.sp.name;
     mount.devours = (mount.devours || 0) + 1;
+    const uniqueDevours = recordDevouredTitan(mount, eatenName);
     mount.scaleBoost = (mount.scaleBoost || 1) + 0.45;
     mount.fused = true;
     mount.maxHp += dead.sp.hp; mount.hp = mount.maxHp;
@@ -3815,23 +5834,23 @@ async function boot() {
     if (titanBattle.wild === dead) { titanBattle.on = false; titanBattle.wild = null; titanBattle.mount = null; }
     walker.shakeT = 1.5;
     if (checkUltimate(mount)) {
-      showToast('👑 终极虚空泰坦诞生!连吞 ' + mount.devours + ' 只同类的它化作紫渊巨兽 —— 全速横渡深海,西南新岛近在咫尺!(按 V 骑乘)');
+      showToast('👑 终极虚空泰坦诞生!吞噬 4 种不同泰坦后,它化作白色巨兽并显现四色纹路 —— 全速横渡深海!(按 V 骑乘)');
     } else {
-      showToast('🌀 吞噬完成!泰坦吞下' + eatenName + ',身躯暴涨(已吞噬 ' + mount.devours + '/4)'
-        + (mount.ultimate ? '' : ' —— 再吞 ' + Math.max(0, 4 - mount.devours) + ' 只即可进化为终极虚空泰坦')
+      showToast('🌀 吞噬完成!泰坦吞下' + eatenName + ',身躯暴涨(不同泰坦 ' + uniqueDevours + '/4)'
+        + (mount.ultimate ? '' : ' —— 再吞 ' + Math.max(0, 4 - uniqueDevours) + ' 种不同泰坦即可进化')
         + ';它已能横渡深海,西南有新海域!');
     }
   }
-  // 吞噬满 4 只 → 终极虚空泰坦(紫渊之躯);返回是否本次进化
+  // 吞噬满 4 种不同泰坦 → 终极虚空泰坦(白化 + 四纹路);返回是否本次进化
   function checkUltimate(mount) {
     let justEvolved = false;
-    if (mount.devours >= 4 && !mount.ultimate) {
+    if (devouredUniqueCount(mount) >= 4 && !mount.ultimate) {
       justEvolved = true;
       mount.ultimate = true;
-      mount.sp = Object.assign({}, mount.sp, { name: '终极虚空泰坦', color: [0.58, 0.20, 0.85] });
+      mount.sp = Object.assign({}, mount.sp, { name: '终极虚空泰坦', color: [0.92, 0.95, 0.94] });
       mount.scaleBoost += 0.6;
       mount.maxHp += 500; mount.hp = mount.maxHp;
-      mount.mesh.material.colorNode = marineSkin(vec3(0.58, 0.20, 0.85));
+      mount.mesh.material.colorNode = ultimateTitanSkin();
     }
     mount.mesh.scale.setScalar(mount.sp.scale * mount.scaleBoost);
     return justEvolved;
@@ -3848,6 +5867,7 @@ async function boot() {
       scene.remove(g.mesh);
       g.state = 'gone';
       king.devours = (king.devours || 0) + 1;
+      recordDevouredTitan(king, g.sp.name);
       king.scaleBoost = (king.scaleBoost || 1) + 0.45;
       king.fused = true;
       king.maxHp += g.maxHp; king.hp = king.maxHp;
@@ -3855,11 +5875,12 @@ async function boot() {
     }
     if (riding && riddenTitan && riddenTitan.state === 'gone') riddenTitan = king;
     walker.shakeT = Math.max(walker.shakeT, 1.5);
+    const uniqueDevours = devouredUniqueCount(king);
     if (checkUltimate(king)) {
-      showToast('👑 强者为尊!最大的泰坦吞下 ' + eaten + ' 只同伴,化作终极虚空泰坦 —— 紫渊巨兽听凭你骑乘!');
+      showToast('👑 强者为尊!最大的泰坦吞下 ' + eaten + ' 只同伴,集齐 4 种不同泰坦之力 —— 白色终极巨兽听凭你骑乘!');
     } else {
-      showToast('🌊 强者为尊!最大的那只泰坦自动吞噬了 ' + eaten + ' 只同伴,身躯暴涨(已吞噬 ' + king.devours + '/4)'
-        + (king.ultimate ? '' : ' —— 再吞 ' + Math.max(0, 4 - king.devours) + ' 只即成终极虚空泰坦'));
+      showToast('🌊 强者为尊!最大的那只泰坦自动吞噬了 ' + eaten + ' 只同伴,身躯暴涨(不同泰坦 ' + uniqueDevours + '/4)'
+        + (king.ultimate ? '' : ' —— 再吞 ' + Math.max(0, 4 - uniqueDevours) + ' 种不同泰坦即成终极形态'));
     }
   }
   function killTitan(g) {
@@ -3901,7 +5922,7 @@ async function boot() {
         }
       }
     } else if (g.state === 'rage' || g.state === 'tamed') {
-      // 暴怒泰坦会主动攻击岸上的人:锁定位置 → 冲撞 → 巨尾拍击
+      // 暴怒泰坦会主动攻击岸上的人;第二岛钓出的泰坦还会随机扫荡野人。
       const attacking = g.state === 'rage' && g.attackK >= 0;
       if (g.state === 'rage' && walker.on && !walker.inBunker) {
         if (attacking) {
@@ -3917,14 +5938,24 @@ async function boot() {
             g.attackK = -1;
             g.attackT = 8 + Math.random() * 6;
             walker.shakeT = Math.max(walker.shakeT, 1.2);
-            if (Math.hypot(walker.x - g.atkX, walker.z - g.atkZ) < 28) {
+            if (g.atkKind === 'savage') {
+              let hitSavage = 0;
+              for (const sv of savages) {
+                if (sv.dead) continue;
+                if (Math.hypot(sv.x - g.atkX, sv.z - g.atkZ) < 70) {
+                  markSavageDead(sv, 90);
+                  hitSavage++;
+                }
+              }
+              showToast(hitSavage > 0
+                ? '🐋 ' + g.sp.name + '巨尾扫过雨林边缘,拍碎了 ' + hitSavage + ' 名野人!'
+                : '🐋 ' + g.sp.name + '砸向野人阵地,泥浪翻涌但目标四散躲开');
+            } else if (Math.hypot(walker.x - g.atkX, walker.z - g.atkZ) < 28) {
               walker.stamina = Math.max(0, walker.stamina - 55);
-              damageWalker(40, '被' + g.sp.name + '的巨尾拍成了肉泥');
+              damageWalker(40, '被' + g.sp.name + '的巨尾拍成了肉泥', true);
               showToast('💥 ' + g.sp.name + '的巨尾拍碎了海岸!气浪把你掀飞(生命 -40)');
-              if (walker.hp <= 0) return;
-              if (walker.stamina <= 0) {
-                showToast('你被拍晕了……同伴把你拖回了快艇');
-                exitIsland(true);
+              if (walker.hp <= 0 || walker.stamina <= 0) {
+                titanKnockout(g.sp.name + '的巨尾');
                 return;
               }
             } else {
@@ -3933,8 +5964,19 @@ async function boot() {
           }
         } else {
           g.attackT -= dt;
-          if (g.attackT <= 0 && Math.hypot(walker.x - g.x, walker.z - g.z) < 150) {
+          const savageTarget = g.homeIsland === NEW_ISLAND && Math.random() < 0.65
+            ? savages.filter(sv => !sv.dead && Math.hypot(sv.x - NEW_ISLAND.x, sv.z - NEW_ISLAND.z) < NEW_ISLAND.R * 1.15)
+                .sort(() => Math.random() - 0.5)[0]
+            : null;
+          if (g.attackT <= 0 && savageTarget) {
             g.attackK = 0;
+            g.atkKind = 'savage';
+            g.atkX = savageTarget.x;
+            g.atkZ = savageTarget.z;
+            showToast('⚠ ' + g.sp.name + '锁定了一队野人,山一样的身躯正压向雨林边缘!');
+          } else if (g.attackT <= 0 && Math.hypot(walker.x - g.x, walker.z - g.z) < 150) {
+            g.attackK = 0;
+            g.atkKind = 'walker';
             g.atkX = walker.x;                      // 锁定玩家当前位置,给 2.2 秒逃离
             g.atkZ = walker.z;
             showToast('⚠ ' + g.sp.name + '调转山头般的身躯朝你冲来了 —— 快离开这片海岸!');
@@ -3943,12 +5985,13 @@ async function boot() {
       }
       // 环岛巡游(切向前进);冲撞时由攻击逻辑接管位置
       if (!attacking) {
-        const ang = Math.atan2(g.z - ISLAND.z, g.x - ISLAND.x);
-        const R = ISLAND.R + (g.ringR || 45) + (g.state === 'tamed' ? 15 : 0);
+        const home = g.homeIsland || ISLAND;
+        const ang = Math.atan2(g.z - home.z, g.x - home.x);
+        const R = home.R + (g.ringR || 45) + (g.state === 'tamed' ? 15 : 0);
         const w = (g.state === 'rage' ? g.sp.speed : g.sp.speed * 0.67) / R;
         const na = ang + w * dt;
-        g.x = ISLAND.x + Math.cos(na) * R;
-        g.z = ISLAND.z + Math.sin(na) * R;
+        g.x = home.x + Math.cos(na) * R;
+        g.z = home.z + Math.sin(na) * R;
         g.dir = -na;
       }
       // 偶尔跃出水面:山一样的身躯腾空再砸回海里
@@ -3980,11 +6023,12 @@ async function boot() {
       // 翻肚,缓缓漂向岸边
       g.deadK = Math.min(1, g.deadK + dt * 0.5);
       g.mesh.rotation.z = g.deadK * 2.6;
-      const dc = Math.hypot(g.x - ISLAND.x, g.z - ISLAND.z);
-      const near = ISLAND.R * 0.95;
+      const home = g.homeIsland || ISLAND;
+      const dc = Math.hypot(g.x - home.x, g.z - home.z);
+      const near = home.R * 0.95;
       if (dc > near) {
-        g.x += (ISLAND.x - g.x) / dc * 5 * dt;
-        g.z += (ISLAND.z - g.z) / dc * 5 * dt;
+        g.x += (home.x - g.x) / dc * 5 * dt;
+        g.z += (home.z - g.z) / dc * 5 * dt;
       }
       g.y = wx - 2;
       if (g.sinkK >= 0) {
@@ -3993,17 +6037,88 @@ async function boot() {
         if (g.sinkK >= 1) { g.state = 'gone'; scene.remove(g.mesh); return; }
       }
     }
+    if (spoutState.strength > 0.05 && g.state !== 'dead') {
+      const dxS = spoutState.x - g.x, dzS = spoutState.z - g.z;
+      const dS = Math.hypot(dxS, dzS) || 1;
+      if (dS < spoutState.radius) {
+        const pull = spoutState.strength * (1 - dS / spoutState.radius) * (spoutState.target === g ? 1.8 : 0.8);
+        g.x += ((dxS / dS) * 9.0 + (-dzS / dS) * 4.5) * pull * dt;
+        g.z += ((dzS / dS) * 9.0 + (dxS / dS) * 4.5) * pull * dt;
+        g.dir += pull * dt * 0.8;
+        walker.shakeT = Math.max(walker.shakeT, pull * 0.45);
+      }
+    }
     g.mesh.position.set(g.x, g.y, g.z);
     g.mesh.rotation.y = g.dir;
   }
   function updateGiant(t, dt) {
     for (const g of titans) updateTitan(g, t, dt);
+    autoHuntCheck(t);                 // 驯服泰坦发现同类靠近:自动迎战 / 碾压吞噬
   }
 
-  // ---- 野人 AI:游荡;玩家靠近则持矛追击,近身戳刺(生命 -12)----
+  // ---- 野人 AI:游荡;玩家靠近则持矛追击,近身戳刺(低伤害但高频)----
   function updateSavages(t, dt) {
     relics.altarCd = Math.max(0, relics.altarCd - dt);
     relics.altarUsed = Math.max(0, relics.altarUsed - dt);
+    const outsiderOnNew = walker.on && !walker.savage && !relics.tribeAlly && newIslandHeightAt(walker.x, walker.z) > 0.5;
+    if (outsiderOnNew) newIsland.landedT = Math.min(999, newIsland.landedT + dt);
+    else newIsland.landedT = 0;
+    const playerAttackAllowed = outsiderOnNew && newIsland.landedT >= 20;
+    const warAllowed = playerAttackAllowed;
+    const tamedGuard = myTamedTitan();
+    if (warAllowed) {
+      if (relics.war.mode === 'none') {
+        relics.war.next -= dt;
+        if (relics.war.sent >= relics.war.max) {
+          relics.war.next = 1e9;
+          if (!relics.war.exhausted) {
+            relics.war.exhausted = true;
+            showToast('野人围剿累计 500 人后终于停歇 —— 两村损失惨重,暂时无力再战');
+          }
+        } else if (relics.war.next <= 0) {
+          relics.war.mode = Math.random() < 0.36 ? 'assault' : 'guerrilla';
+          relics.war.t = relics.war.mode === 'assault' ? 58 : 22;
+          relics.war.waveT = 0;
+          showToast(relics.war.mode === 'assault'
+            ? '⚠ 野人总攻!两村暂时放下仇怨,集结战士围攻外来者 —— 快用武器库或泰坦防线抵御'
+            : '⚠ 野人游击战开始!每波 10 名野人,累计最多 500 名围剿者会轮番上岛');
+        }
+      } else {
+        relics.war.t -= dt;
+        relics.war.waveT -= dt;
+        if (relics.war.waveT <= 0) {
+          relics.war.waveT = relics.war.mode === 'assault' ? 7 : 3.2;
+          const remaining = Math.max(0, relics.war.max - relics.war.sent);
+          const waveSize = Math.min(remaining, relics.war.mode === 'guerrilla' ? 10 : 16);
+          let dispatched = 0;
+          for (const sv of savages.slice().sort((a, b) => (a.dead === b.dead ? 0 : a.dead ? 1 : -1))) {
+            if (dispatched >= waveSize) continue;
+            if (sv.warActive && !sv.dead) continue;
+            if (sv.dead) continue;
+            sv.warUnit = true; sv.warActive = true; sv.warCounted = false;
+            sv.mesh.visible = true;
+            sv.mesh.rotation.x = 0;
+            sv.dir = Math.atan2(walker.x - sv.x, walker.z - sv.z);
+            sv.state = relics.war.mode;
+            sv.speed = (relics.war.mode === 'assault' ? 4.6 : 4.0)
+              * (sv.job === 'swordsman' ? 1.12 : sv.job === 'shield' ? 0.82 : sv.job === 'poisoner' ? 0.95 : 1.0);
+            dispatched++;
+          }
+          relics.war.sent += dispatched;
+          if (dispatched > 0) showToast((relics.war.mode === 'assault' ? '🛡 总攻队 ' : '🌿 游击小队 ')
+            + dispatched + ' 人从雨林和村落方向压过来(累计 ' + relics.war.sent + '/' + relics.war.max + ')');
+        }
+        if (relics.war.t <= 0) {
+          const endedMode = relics.war.mode;
+          relics.war.mode = 'none';
+          relics.war.next = relics.tribeAlly ? 1e9 : (endedMode === 'assault' ? 24 : 10);
+          showToast('野人暂时退回雨林,但只要你没取得信任,他们还会再来');
+        }
+      }
+    } else {
+      relics.war.mode = 'none';
+      if (relics.tribeAlly) relics.war.next = 1e9;
+    }
     for (const sv of savages) {
       if (sv.dead) {
         if (sv.fallK < 1) {
@@ -4012,25 +6127,118 @@ async function boot() {
         }
         sv.respawnT -= dt;
         if (sv.respawnT <= 0) {
-          const a = Math.random() * Math.PI * 2, r = NEW_ISLAND.R * 0.6;
-          sv.x = NEW_ISLAND.x + Math.cos(a) * r; sv.z = NEW_ISLAND.z + Math.sin(a) * r;
-          sv.dead = false; sv.hp = 2; sv.fallK = 0;
+          const a = Math.random() * Math.PI * 2, r = 5 + Math.random() * 9;
+          const hx = sv.homeX || NEW_ISLAND.x, hz = sv.homeZ || NEW_ISLAND.z;
+          sv.x = hx + Math.cos(a) * r; sv.z = hz + Math.sin(a) * r;
+          sv.dead = false; sv.hp = sv.maxHp || 2; sv.fallK = 0;
           sv.mesh.rotation.x = 0;
+          sv.mesh.scale.setScalar(1);
+          clearSavageRankVisual(sv.mesh);
+          sv.elder = false; sv.guard = false; sv.aggroT = 0;
           sv.state = 'wander';
         }
         continue;
       }
-      const onNew = walker.on && newIslandHeightAt(walker.x, walker.z) > -1;
+      const onNew = walker.on && !walker.savage && newIslandHeightAt(walker.x, walker.z) > -1;
       const dP = (onNew && relics.altarUsed <= 0) ? Math.hypot(walker.x - sv.x, walker.z - sv.z) : 1e9;
       sv.hitCd = Math.max(0, sv.hitCd - dt);
-      if (dP < 26) {                     // 发现玩家:追击
+      if (sv.aggroT > 0) sv.aggroT -= dt;
+      const enemy = savages.find(o => !o.dead && o.faction !== sv.faction
+        && Math.hypot(o.x - sv.x, o.z - sv.z) < 18);
+      const warActive = warAllowed && relics.war.mode !== 'none';
+      const dTitan = tamedGuard ? Math.hypot(tamedGuard.x - sv.x, tamedGuard.z - sv.z) : 1e9;
+      const wildTitanThreat = titans.find(g => g.state === 'rage' && g.homeIsland === NEW_ISLAND
+        && (g.atkKind === 'savage' || Math.hypot(g.x - sv.x, g.z - sv.z) < 180));
+      if (wildTitanThreat) {
+        sv.state = 'titanCounter';
+        sv.dir = Math.atan2(wildTitanThreat.x - sv.x, wildTitanThreat.z - sv.z);
+        sv.speed = Math.hypot(wildTitanThreat.x - sv.x, wildTitanThreat.z - sv.z) > 70 ? 2.2 : 0;
+        if (Math.hypot(wildTitanThreat.x - sv.x, wildTitanThreat.z - sv.z) < 150 && sv.hitCd <= 0) {
+          sv.hitCd = sv.job === 'poisoner' ? 1.2 : 1.6;
+          const dmg = sv.job === 'poisoner' ? 2.2 : sv.job === 'swordsman' ? 1.6 : sv.job === 'spearman' ? 1.8 : 1.1;
+          wildTitanThreat.hp = Math.max(0, wildTitanThreat.hp - dmg);
+          wildTitanThreat.mesh.rotation.z += 0.012;
+          if (!sv.wildTitanWarnT || t - sv.wildTitanWarnT > 5) {
+            sv.wildTitanWarnT = t;
+            showToast('🛡 野人反击' + wildTitanThreat.sp.name + '!毒矛和投索持续削它的生命('
+              + Math.ceil(wildTitanThreat.hp) + '/' + wildTitanThreat.maxHp + ')');
+          }
+          if (wildTitanThreat.hp <= 0) {
+            killTitan(wildTitanThreat);
+            showToast('☠ 野人把' + wildTitanThreat.sp.name + '拖垮了!现在正是你坐收渔翁之利的时候');
+          }
+        }
+      } else if ((sv.elder || sv.guard) && playerAttackAllowed && sv.aggroT > 0) {
+        sv.state = sv.elder ? 'elderHunt' : 'elderGuard';
+        sv.dir = Math.atan2(walker.x - sv.x, walker.z - sv.z);
+        sv.speed = sv.elder ? 5.1 : 4.4;
+        const strikeRange = walker.swordTurret ? (sv.elder ? 62 : 52) : (sv.elder ? 3.0 : 2.2);
+        if (dP < strikeRange && sv.hitCd <= 0) {
+          sv.hitCd = sv.elder ? 1.35 : 1.0;
+          const dmg = sv.elder ? 20 : 9;
+          damageWalker(dmg, sv.elder ? '被野人长老的毒矛钉死在炮台上' : '被长老警卫射杀');
+          applyPoison(sv.elder ? 8 : 5, 0, '被长老队毒矛毒死了');
+          showToast((sv.elder ? '☠ 野人长老' : '🛡 长老警卫')
+            + (walker.swordTurret ? '的投矛打上了炮台!' : '贴身击中了你!')
+            + '生命 -' + dmg + ' · 中毒');
+          if (walker.hp <= 0) return;
+        }
+      } else if (warActive && (dP < 90 || dTitan < 120)) {
+        const targetTitan = tamedGuard && dTitan < dP + 30;
+        const tx = targetTitan ? tamedGuard.x : walker.x;
+        const tz = targetTitan ? tamedGuard.z : walker.z;
+        const ty = targetTitan ? tamedGuard.y : walker.y;
+        sv.state = relics.war.mode;
+        sv.dir = Math.atan2(tx - sv.x, tz - sv.z);
+        sv.speed = (relics.war.mode === 'assault' ? 4.4 : 3.8)
+          * (sv.job === 'swordsman' ? 1.12 : sv.job === 'shield' ? 0.82 : sv.job === 'poisoner' ? 0.95 : 1.0);
+        if (Math.hypot(tx - sv.x, tz - sv.z) < (targetTitan ? 18 : 1.7) && sv.hitCd <= 0) {
+          sv.hitCd = targetTitan ? 1.8 : 0.9;
+          if (targetTitan) {
+            const dmg = relics.war.mode === 'assault' ? 3 : 1;
+            tamedGuard.hp = Math.max(0, tamedGuard.hp - dmg);
+            tamedGuard.mesh.rotation.z += 0.02;
+            if (!sv.titanWarnT || t - sv.titanWarnT > 5) {
+              sv.titanWarnT = t;
+              showToast('⚔ 野人用毒矛和投索围攻你的泰坦!泰坦生命 ' + Math.ceil(tamedGuard.hp) + '/' + tamedGuard.maxHp
+                + ' —— 让它继续吞噬同类可恢复并变强');
+            }
+            if (tamedGuard.hp <= 0) {
+              killTitan(tamedGuard);
+              showToast('☠ 你的泰坦被野人战争拖垮了…… 需要重新驯服或让其他泰坦吞噬恢复');
+            }
+          } else {
+            const baseDmg = sv.job === 'shield' ? 4 : sv.job === 'poisoner' ? 3 : sv.job === 'swordsman' ? 6 : 5;
+            damageWalker(baseDmg + (relics.war.mode === 'assault' ? 2 : 0), '被野人战争淹没了');
+            if (sv.job === 'poisoner' || relics.war.mode === 'assault') applyPoison(sv.job === 'poisoner' ? 6 : 4, 0, '被野人毒矛毒死了');
+            showToast((relics.war.mode === 'assault' ? '🛡 总攻' : '🌿 游击')
+              + sv.jobName + '击中了你!' + (sv.job === 'poisoner' ? '视野开始发糊,毒性持续侵蚀' : ''));
+            if (walker.hp <= 0) return;
+          }
+        }
+      } else if (!warActive && enemy) {
+        sv.state = 'tribeWar';
+        sv.dir = Math.atan2(enemy.x - sv.x, enemy.z - sv.z);
+        sv.speed = 2.4;
+        if (Math.hypot(enemy.x - sv.x, enemy.z - sv.z) < 1.4 && sv.hitCd <= 0) {
+          sv.hitCd = 1.4;
+          enemy.hp -= 1;
+          if (enemy.hp <= 0) {
+            markSavageDead(enemy, 80);
+            if (walker.on && Math.hypot(walker.x - sv.x, walker.z - sv.z) < 45) {
+              showToast((sv.faction === 'stone' ? '石牙' : '雾叶') + '野人击倒了敌对村落的一名战士');
+            }
+          }
+        }
+      } else if (playerAttackAllowed && dP < 26) {                     // 发现玩家:追击
         sv.state = 'chase';
         sv.dir = Math.atan2(walker.x - sv.x, walker.z - sv.z);
         sv.speed = 3.4;
         if (dP < 1.6 && sv.hitCd <= 0) {
           sv.hitCd = 1.1;
-          damageWalker(12, '被野人的长矛戳死了');
-          showToast('🗡 野人一矛戳中了你!生命 -12');
+          damageWalker(5, '被野人的长矛戳死了');
+          applyPoison(4, 0, '被野人毒矛毒死了');
+          showToast('🗡 野人毒矛戳中了你!视野发糊,毒性持续掉血');
           if (walker.hp <= 0) return;
         }
       } else {
@@ -4043,8 +6251,10 @@ async function boot() {
         }
       }
       if (sv.speed > 0) {
-        const nx = sv.x + Math.sin(sv.dir) * sv.speed * dt;
-        const nz = sv.z + Math.cos(sv.dir) * sv.speed * dt;
+        let nx = sv.x + Math.sin(sv.dir) * sv.speed * dt;
+        let nz = sv.z + Math.cos(sv.dir) * sv.speed * dt;
+        const kept = keepSavageOutOfGreatWall(nx, nz);
+        nx = kept.x; nz = kept.z;
         const gh = newIslandHeightAt(nx, nz);
         if (gh > 0.4 && gh < 26) { sv.x = nx; sv.z = nz; } else sv.dir += Math.PI * 0.5;
         sv.mesh.rotation.y = sv.dir;
@@ -4053,19 +6263,112 @@ async function boot() {
     }
   }
 
-  // ---- 磁吸炸弹:新岛上按 G 投掷,自动吸附最近野人,一弹一个;共 2 枚,冷却 30s ----
+  function updateToxicAnimals(t, dt) {
+    if (walker.poisonT > 0) {
+      walker.poisonT -= dt;
+      walker.poisonBlurT = Math.max(0, walker.poisonBlurT - dt);
+      damageWalker(dt * 0.8, '毒发身亡');
+      if (walker.poisonT <= 0 && walker.on) showToast('毒性终于退了');
+    } else walker.poisonBlurT = Math.max(0, walker.poisonBlurT - dt);
+    const pv = $('poison-veil');
+    if (pv) pv.style.opacity = Math.max(0, Math.min(1, walker.poisonBlurT / 4)).toFixed(2);
+    for (const an of toxicAnimals) {
+      if (an.dead) {
+        an.respawnT -= dt;
+        if (an.respawnT <= 0) {
+          an.dead = false;
+          an.mesh.visible = true;
+          an.x = NEW_ISLAND.x + (Math.random() - 0.5) * NEW_ISLAND.R * 1.1;
+          an.z = NEW_ISLAND.z + (Math.random() - 0.5) * NEW_ISLAND.R * 1.1;
+        }
+        continue;
+      }
+      an.t -= dt;
+      an.biteCd = Math.max(0, an.biteCd - dt);
+      if (an.t <= 0) {
+        an.dir += (Math.random() - 0.5) * 1.6;
+        an.t = 1.5 + Math.random() * 2.5;
+      }
+      const spd = an.kind === 'snake' ? 0.7 : 0.35;
+      const nx = an.x + Math.sin(an.dir) * spd * dt;
+      const nz = an.z + Math.cos(an.dir) * spd * dt;
+      const h = newIslandHeightAt(nx, nz);
+      if (h > 0.7 && h < 24) { an.x = nx; an.z = nz; } else an.dir += Math.PI * 0.6;
+      an.mesh.position.set(an.x, newIslandHeightAt(an.x, an.z) + (an.kind === 'snake' ? 0.08 : 0.14), an.z);
+      an.mesh.rotation.y = an.dir + Math.sin(t * 5 + an.x) * 0.2;
+      if (walker.on && !walker.inBunker && an.biteCd <= 0 && Math.hypot(walker.x - an.x, walker.z - an.z) < (an.kind === 'snake' ? 1.2 : 0.9)) {
+        an.biteCd = 8;
+        if (relics.antidote > 0) {
+          relics.antidote--;
+          showToast('☘ 雾叶解毒药生效,挡下了一次毒伤(剩 ' + relics.antidote + ' 份)');
+        } else {
+          applyPoison(7.2, 20, '被毒物毒死了');
+          showToast((an.kind === 'snake' ? '🐍 毒蛇咬中了你!' : '☠ 毒蛙的毒液沾到皮肤!')
+            + '生命 -20,随后毒性还会持续扣约 10 点血 —— 远离雨林毒物');
+        }
+      }
+    }
+  }
+
+  // ---- 磁吸炸弹:库存用完后单颗充能;管理员模式无限无冷却 ----
+  const BOMB_ADMIN_PASSWORD = '🧲💥';
   const magnetBombs = [];
   const bombGeo = new THREE.SphereGeometry(0.14, 10, 8);
   const bombMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.15, 0.55, 0.65)); return m; })();
+  function applyMagnetBombAOE(x, z, radius = 13) {
+    let hits = 0;
+    for (const sv of savages) {
+      if (sv.dead) continue;
+      const d = Math.hypot(sv.x - x, sv.z - z);
+      if (d > radius) continue;
+      hits++;
+      const core = d < radius * 0.45;
+      sv.hp -= sv.elder ? (core ? 10 : 6) : sv.guard ? (core ? 8 : 5) : 999;
+      sv.aggroT = Math.max(sv.aggroT || 0, 120);
+      if (sv.hp <= 0) markSavageDead(sv, sv.elder ? 999 : 90);
+    }
+    if (mp.ws && mp.ws.readyState === 1) {
+      for (const p of mp.peers.values()) {
+        if ((p.mode === 'walk' || p.mode === 'ride') && Math.hypot(p.cx - x, p.cz - z) <= radius) {
+          const d = Math.hypot(p.cx - x, p.cz - z);
+          mp.ws.send(JSON.stringify({ t: 'hit', target: p.id, dmg: d < radius * 0.45 ? 70 : 42, kind: 'magnet-bomb' }));
+        }
+      }
+    }
+    spawnImpactRing(x, z, radius);
+    walker.shakeT = Math.max(walker.shakeT, 0.9);
+    showToast(hits > 0
+      ? '💥 磁吸炸弹范围爆破!卷入 ' + hits + ' 名野人'
+      : '💥 磁吸炸弹爆炸,冲击波扫过周围');
+  }
+  function tryBombAdmin() {
+    const pwd = window.prompt('磁吸炸弹管理员密码(表情):');
+    if (pwd === null) return;
+    if (pwd.trim() !== BOMB_ADMIN_PASSWORD) {
+      showToast('磁吸炸弹管理员密码错误');
+      return;
+    }
+    walker.bombAdmin = true;
+    walker.bombs = Math.max(walker.bombs, 5);
+    walker.bombCd = 0;
+    showToast('🧲 管理员模式开启:磁吸炸弹无限无冷却');
+  }
   function throwMagnetBomb() {
     if (newIslandHeightAt(walker.x, walker.z) < 0.3) {
       showToast('磁吸炸弹只有在新荒岛上才能用');
       return;
     }
-    if (walker.bombCd > 0) { showToast('磁吸炸弹冷却中…… ' + Math.ceil(walker.bombCd) + 's'); return; }
-    if (walker.bombs <= 0) { showToast('磁吸炸弹用完了(共 2 枚)'); return; }
-    walker.bombs--;
-    walker.bombCd = 30;
+    const admin = !!walker.bombAdmin;
+    if (!admin) {
+      if (walker.bombs <= 0) {
+        showToast(walker.bombCd > 0
+          ? '🧲 磁吸炸弹正在充能,还剩 ' + Math.ceil(walker.bombCd) + 's 才能获得下一颗'
+          : '🧲 磁吸炸弹正在重新装填');
+        return;
+      }
+      walker.bombs--;
+      if (walker.bombs <= 0) walker.bombCd = 30;
+    }
     startHandAction('shoot');
     const cp = Math.cos(walker.viewPitch);
     const dx = Math.sin(walker.viewYaw) * cp, dy = Math.sin(walker.viewPitch) + 0.35, dz = Math.cos(walker.viewYaw) * cp;
@@ -4074,10 +6377,23 @@ async function boot() {
     scene.add(mesh);
     magnetBombs.push({ mesh, x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
       vx: dx * 16, vy: dy * 16, vz: dz * 16, stuck: null, fuse: -1 });
-    showToast('🧲 磁吸炸弹出手!它会自己找上最近的野人(剩 ' + walker.bombs + ' 枚)');
+    showToast(admin
+      ? '🧲 管理员磁吸炸弹出手!无限无冷却'
+      : '🧲 磁吸炸弹出手!'
+        + (walker.bombs > 0 ? ' · 库存剩 ' + walker.bombs : ' · 库存用完,开始 30s 充能'));
   }
   function updateBombs(t, dt) {
-    walker.bombCd = Math.max(0, walker.bombCd - dt);
+    if (walker.bombAdmin) {
+      walker.bombCd = 0;
+    } else if (walker.bombs <= 0 && walker.bombCd > 0) {
+      walker.bombCd = Math.max(0, walker.bombCd - dt);
+      if (walker.bombCd <= 0) {
+        walker.bombs = 1;
+        if (walker.on && newIslandHeightAt(walker.x, walker.z) > 0.3) showToast('🧲 磁吸炸弹充能完成 · 获得 1 颗');
+      }
+    } else if (walker.bombs > 0) {
+      walker.bombCd = 0;
+    }
     for (let i = magnetBombs.length - 1; i >= 0; i--) {
       const b = magnetBombs[i];
       if (!b.stuck) {
@@ -4113,11 +6429,7 @@ async function boot() {
         b.fuse -= dt;
         b.mesh.visible = Math.sin(t * 30) > 0;      // 爆炸前闪烁
         if (b.fuse <= 0) {
-          if (b.stuck !== 'ground' && !b.stuck.dead) {
-            b.stuck.dead = true; b.stuck.fallK = 0; b.stuck.respawnT = 90;
-            walker.shakeT = Math.max(walker.shakeT, 0.9);
-            showToast('💥 轰!!磁吸炸弹把野人炸上了天!');
-          } else showToast('💥 炸弹在地上炸了个坑…… 没炸到野人');
+          applyMagnetBombAOE(b.x, b.z, 13);
           scene.remove(b.mesh);
           magnetBombs.splice(i, 1);
         }
@@ -4220,7 +6532,7 @@ async function boot() {
     flyingArrows.push({
       x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
       vx: dx * 220, vy: dy * 220, vz: dz * 220,
-      mesh, stuck: false, life: 0, bullet: true,
+      mesh, stuck: false, life: 0, bullet: true, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
     });
     showToast('砰!! 子弹呼啸而出(剩 ' + walker.bullets + ' 发)');
   }
@@ -4254,7 +6566,7 @@ async function boot() {
     flyingArrows.push({
       x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
       vx: dx * 300, vy: dy * 300, vz: dz * 300,
-      mesh, stuck: false, life: 0, bullet: true, sniper: true,
+      mesh, stuck: false, life: 0, bullet: true, sniper: true, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
     });
     showToast('轰!! 卡莫星的怒吼震彻全岛(剩 ' + walker.sniperAmmo + ' 发)');
   }
@@ -4277,8 +6589,113 @@ async function boot() {
     flyingArrows.push({
       x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
       vx: dx * 180, vy: dy * 180, vz: dz * 180,
-      mesh, stuck: false, life: 0, bullet: true, smg: true,
+      mesh, stuck: false, life: 0, bullet: true, smg: true, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
     });
+  }
+  const boulderGeo = new THREE.SphereGeometry(0.16, 10, 8);
+  const boulderMat = (() => { const m = new THREE.MeshBasicNodeMaterial(); m.colorNode = marineSkin(vec3(0.26, 0.25, 0.23)); return m; })();
+  const catapultLineMat = new THREE.LineBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.72 });
+  const catapultRingMat = (() => {
+    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+    m.colorNode = marineSkin(vec3(1.0, 0.58, 0.18));
+    m.opacityNode = float(0.55);
+    return m;
+  })();
+  function spawnCatapultTrail(x, y, z, vx, vy, vz) {
+    const pts = [];
+    for (let i = 0; i <= 24; i++) {
+      const tt = i / 24 * 1.55;
+      pts.push(new THREE.Vector3(x + vx * tt, y + vy * tt - 4.9 * tt * tt, z + vz * tt));
+    }
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), catapultLineMat.clone());
+    line.frustumCulled = false;
+    scene.add(line);
+    catapultEffects.push({ mesh: line, life: 0, maxLife: 1.35, kind: 'trail' });
+  }
+  function spawnImpactRing(x, z, radius = 8) {
+    const y = groundHeightAt(x, z) + 0.08;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.08, 8, 64), catapultRingMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, y, z);
+    ring.frustumCulled = false;
+    scene.add(ring);
+    catapultEffects.push({ mesh: ring, life: 0, maxLife: 0.95, kind: 'ring', radius });
+  }
+  function applyCatapultAOE(x, z, radius = 8) {
+    let hitAny = false;
+    for (const sv of savages) {
+      if (sv.dead) continue;
+      const d = Math.hypot(sv.x - x, sv.z - z);
+      if (d <= radius) {
+        sv.hp -= d < radius * 0.45 ? 8 : 4;
+        hitAny = true;
+        if (sv.hp <= 0) markSavageDead(sv, 90);
+      }
+    }
+    for (const h of huntables) {
+      if (h.state === 'dead' || h.state === 'gone') continue;
+      const d = Math.hypot(h.x - x, h.z - z);
+      if (d <= radius) { h.hp = 0; killHuntable(h); hitAny = true; }
+    }
+    if (mp.ws && mp.ws.readyState === 1) {
+      for (const p of mp.peers.values()) {
+        if ((p.mode === 'walk' || p.mode === 'ride') && Math.hypot(p.cx - x, p.cz - z) <= radius) {
+          const d = Math.hypot(p.cx - x, p.cz - z);
+          const dmg = d < radius * 0.45 ? 95 : 65;
+          mp.ws.send(JSON.stringify({ t: 'hit', target: p.id, dmg, kind: 'catapult-aoe' }));
+          hitAny = true;
+        }
+      }
+    }
+    showToast(hitAny ? '💥 巨石砸开一圈冲击波!范围内目标受到重创' : '💥 巨石落地,冲击波掀起尘浪');
+  }
+  function throwSpear() {
+    shootCooldown = 0.9;
+    startHandAction('shoot');
+    const poisoned = walker.poisonSpear > 0;
+    if (poisoned) walker.poisonSpear--;
+    const cp = Math.cos(walker.viewPitch);
+    const dx = Math.sin(walker.viewYaw) * cp, dy = Math.sin(walker.viewPitch), dz = Math.cos(walker.viewYaw) * cp;
+    const mesh = new THREE.Mesh(createSpearGeometry(), arrowMat);
+    const eyeY = walker.y + 1.55;
+    mesh.position.set(walker.x + dx * 0.7, eyeY + dy * 0.7, walker.z + dz * 0.7);
+    scene.add(mesh);
+    flyingArrows.push({
+      x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
+      vx: dx * 38, vy: dy * 38 + 2.5, vz: dz * 38,
+      mesh, stuck: false, life: 0, spear: true, poison: poisoned, savageRole: walker.savageRole,
+      aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
+    });
+    showToast(poisoned ? '☠ 毒矛掷出!命中会造成模糊视野和持续毒伤' : '🗡 长矛掷出!野人之矛命中好友可造成 35 伤害');
+  }
+  function fireCatapult(cp) {
+    cp = cp || nearestPlacedCatapult();
+    if (!cp) {
+      showToast('投石机是固定炮台 —— 先在地上放置,再站到旁边按空格发射');
+      return;
+    }
+    if (walker.catapultAmmo <= 0) {
+      showToast('投石机需要巨石弹 —— 到海边大礁石旁按 N,花 2 分钟切割制作');
+      return;
+    }
+    walker.catapultAmmo--;
+    shootCooldown = 1.8;
+    startHandAction('shoot');
+    walker.shakeT = Math.max(walker.shakeT, 0.20);
+    const cosPitch = Math.cos(walker.viewPitch);
+    const dx = Math.sin(walker.viewYaw) * cosPitch, dy = Math.max(0.08, Math.sin(walker.viewPitch)), dz = Math.cos(walker.viewYaw) * cosPitch;
+    const mesh = new THREE.Mesh(boulderGeo, boulderMat);
+    const fireY = cp.y + 1.15;
+    mesh.position.set(cp.x + dx * 1.15, fireY, cp.z + dz * 1.15);
+    scene.add(mesh);
+    const vx = dx * 58, vy = dy * 58 + 14, vz = dz * 58;
+    spawnCatapultTrail(mesh.position.x, mesh.position.y, mesh.position.z, vx, vy, vz);
+    flyingArrows.push({
+      x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
+      vx, vy, vz,
+      mesh, stuck: false, life: 0, catapult: true, bullet: true, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
+    });
+    showToast('🪨 固定投石机抛出巨石!黄色虚拟弹道显示大致落线,落地有范围伤害');
   }
   // ---- 地下军火库(管理员彩蛋):二战老兵埋在岛心的武器库 ----
   // 岛上按 P 输入密码 1945 传送进入;梯子按 E 返回地面
@@ -4404,9 +6821,309 @@ async function boot() {
 
   const flyingArrows = [];
   let shootCooldown = 0;
+  function distPointToSegment(px, py, pz, ax, ay, az, bx, by, bz) {
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const apx = px - ax, apy = py - ay, apz = pz - az;
+    const ab2 = abx * abx + aby * aby + abz * abz || 1;
+    const u = Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / ab2));
+    const qx = ax + abx * u, qy = ay + aby * u, qz = az + abz * u;
+    return Math.hypot(px - qx, py - qy, pz - qz);
+  }
+
+  const tombShot = { count: 0, x: 0, z: 0, yaw: 0, pitch: 0, lastMsg: 0 };
+  function angleDelta(a, b) {
+    let d = a - b;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return Math.abs(d);
+  }
+  function createTombEntrance(x, z) {
+    const y = groundHeightAt(x, z);
+    const stoneMat = makeNodeMat(vec3(0.20, 0.19, 0.17));
+    const darkMat = makeNodeMat(vec3(0.035, 0.030, 0.026));
+    const bronzeMat = makeNodeMat(vec3(0.42, 0.31, 0.15));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.8, 0.18, 8, 48), stoneMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, y + 0.08, z);
+    const hole = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.55, 0.16, 32), darkMat);
+    hole.position.set(x, y + 0.03, z);
+    scene.add(ring, hole);
+    for (let i = 0; i < 4; i++) {
+      const a = i * Math.PI * 0.5 + 0.3;
+      const p = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 1.15), stoneMat);
+      p.position.set(x + Math.cos(a) * 2.0, y + 0.18, z + Math.sin(a) * 2.0);
+      p.rotation.y = -a;
+      scene.add(p);
+    }
+
+    const floorY = y - 32;
+    const room = new THREE.Group();
+    const hintMeshes = [];
+    const wallMat = makeNodeMat(vec3(0.16, 0.14, 0.12));
+    const trapMat = makeNodeMat(vec3(0.52, 0.10, 0.08));
+    const hintMat = makeNodeMat(vec3(1.0, 0.22, 0.12));
+    const runeMat = makeNodeMat(vec3(0.72, 0.06, 0.05));
+    const waterMat = makeNodeMat(vec3(0.06, 0.32, 0.38));
+    const roomBox = new THREE.Mesh(new THREE.BoxGeometry(13, 5.2, 26), (() => {
+      const m = new THREE.MeshBasicNodeMaterial();
+      m.side = THREE.BackSide;
+      m.colorNode = marineSkin(vec3(0.12, 0.105, 0.09));
+      return m;
+    })());
+    roomBox.position.set(0, 2.6, -6);
+    room.add(roomBox);
+    const bendA = new THREE.Mesh(new THREE.BoxGeometry(15, 4.4, 4.2), roomBox.material);
+    bendA.position.set(7.2, 2.2, -18.2);
+    room.add(bendA);
+    const bendB = new THREE.Mesh(new THREE.BoxGeometry(4.8, 4.4, 13), roomBox.material);
+    bendB.position.set(14.2, 2.2, -12.0);
+    room.add(bendB);
+    const waterRoom = new THREE.Mesh(new THREE.BoxGeometry(14, 5.6, 11), roomBox.material);
+    waterRoom.position.set(14.2, 2.8, -2.5);
+    room.add(waterRoom);
+    const pool = new THREE.Mesh(new THREE.BoxGeometry(9.5, 0.06, 5.8), waterMat);
+    pool.position.set(14.2, 0.08, -2.5);
+    room.add(pool);
+    for (const px of [-4.4, 0, 4.4]) {
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 4.2, 10), wallMat);
+      pillar.position.set(px, 2.1, -16.5);
+      room.add(pillar);
+    }
+    const baguaOuter = new THREE.Mesh(new THREE.TorusGeometry(2.3, 0.045, 8, 64), bronzeMat);
+    baguaOuter.rotation.x = -Math.PI / 2;
+    baguaOuter.position.set(0, 0.09, -14.7);
+    room.add(baguaOuter);
+    const baguaInner = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.035, 8, 48), bronzeMat);
+    baguaInner.rotation.x = -Math.PI / 2;
+    baguaInner.position.set(0, 0.10, -14.7);
+    room.add(baguaInner);
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.92), bronzeMat);
+      bar.position.set(Math.cos(a) * 1.65, 0.13, -14.7 + Math.sin(a) * 1.65);
+      bar.rotation.y = -a;
+      room.add(bar);
+    }
+    for (const [rx, rz, sc] of [[-4.4, -4.1, 1.0], [4.1, -8.3, 0.8], [-3.2, -12.2, 0.9], [3.8, -16.7, 0.75]]) {
+      const sig = new THREE.Mesh(new THREE.BoxGeometry(1.2 * sc, 0.025, 0.10), runeMat);
+      sig.position.set(rx, 0.11, rz);
+      sig.rotation.y = Math.PI * 0.25;
+      const sig2 = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.025, 0.9 * sc), runeMat);
+      sig2.position.set(rx, 0.115, rz);
+      sig2.rotation.y = -Math.PI * 0.15;
+      room.add(sig, sig2);
+    }
+    function addBronzeDing(lx, lz, s = 1) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42 * s, 0.55 * s, 0.55 * s, 12), bronzeMat);
+      body.position.y = 0.45 * s;
+      g.add(body);
+      for (const ox of [-0.30, 0.30]) for (const oz of [-0.25, 0.25]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035 * s, 0.045 * s, 0.45 * s, 6), bronzeMat);
+        leg.position.set(ox * s, 0.12 * s, oz * s);
+        g.add(leg);
+      }
+      const earL = new THREE.Mesh(new THREE.TorusGeometry(0.13 * s, 0.018 * s, 6, 14), bronzeMat);
+      earL.position.set(-0.34 * s, 0.78 * s, 0);
+      earL.rotation.z = Math.PI / 2;
+      const earR = earL.clone();
+      earR.position.x = 0.34 * s;
+      g.add(earL, earR);
+      g.position.set(lx, 0, lz);
+      room.add(g);
+    }
+    function addBronzeBell(lx, lz, s = 1) {
+      const bell = new THREE.Mesh(new THREE.ConeGeometry(0.42 * s, 0.85 * s, 12, 1, true), bronzeMat);
+      bell.position.set(lx, 0.55 * s, lz);
+      bell.rotation.z = Math.PI;
+      room.add(bell);
+      const top = new THREE.Mesh(new THREE.TorusGeometry(0.12 * s, 0.018 * s, 6, 14), bronzeMat);
+      top.position.set(lx, 1.02 * s, lz);
+      room.add(top);
+    }
+    addBronzeDing(-4.8, -15.3, 0.9);
+    addBronzeDing(4.7, -18.1, 0.75);
+    addBronzeBell(11.5, -18.2, 0.85);
+    addBronzeBell(16.7, -6.4, 0.72);
+    for (const zc of [-2.0, -6.5, -11.0]) {
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.035, 1.35), trapMat);
+      slab.position.set(zc === -6.5 ? -1.65 : 1.65, 0.035, zc);
+      room.add(slab);
+      const hint = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.035, 6, 32), hintMat);
+      hint.rotation.x = -Math.PI / 2;
+      hint.position.set(slab.position.x, 0.08, zc);
+      hint.visible = false;
+      room.add(hint);
+      hintMeshes.push(hint);
+      const safe = zc === -6.5 ? 1.65 : -1.65;
+      const mark = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.04, 0.48), bronzeMat);
+      mark.position.set(safe, 0.07, zc);
+      mark.rotation.y = Math.PI * 0.25;
+      room.add(mark);
+    }
+    const sarcBase = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.58, 1.25), stoneMat);
+    sarcBase.position.set(-3.4, 0.38, -18.2);
+    room.add(sarcBase);
+    const sarcLid = new THREE.Mesh(new THREE.BoxGeometry(2.95, 0.18, 1.38), stoneMat);
+    sarcLid.position.set(-3.4, 0.80, -18.2);
+    room.add(sarcLid);
+    const rewardMat = {
+      bronze: bronzeMat,
+      peach: makeNodeMat(vec3(0.46, 0.22, 0.11)),
+      red: makeNodeMat(vec3(0.72, 0.08, 0.06)),
+      jade: makeNodeMat(vec3(0.22, 0.72, 0.50)),
+    };
+    const tombRewards = [];
+    function addTombReward(kind, name, mesh, lx, lz, y0 = 0.94) {
+      mesh.position.set(lx, y0, lz);
+      mesh.visible = false;
+      room.add(mesh);
+      tombRewards.push({ kind, name, mesh, x: x + lx, z: z + lz, taken: false });
+    }
+    const peach = new THREE.Group();
+    const peachBlade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.92), rewardMat.peach);
+    peachBlade.position.z = 0.12;
+    const peachGrip = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.34, 8), rewardMat.peach);
+    peachGrip.rotation.x = Math.PI / 2;
+    peachGrip.position.z = -0.48;
+    peach.add(peachBlade, peachGrip);
+    peach.rotation.set(0.12, 0.2, -0.8);
+    addTombReward('peachSword', '桃木剑', peach, -3.85, -18.1);
+    const mirror = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.045, 32), rewardMat.bronze);
+    mirror.rotation.x = Math.PI / 2;
+    addTombReward('bronze', '青铜镜', mirror, -3.35, -18.45);
+    const tally = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.08, 0.22), rewardMat.bronze);
+    tally.rotation.y = 0.35;
+    addTombReward('bronze', '青铜虎符', tally, -2.85, -18.12);
+    const redBottle = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 0.46, 16), rewardMat.red);
+    addTombReward('redBottle', '红釉小瓶', redBottle, -3.05, -18.62);
+    const jadeDuck = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 8), rewardMat.jade);
+    jadeDuck.scale.set(1.35, 0.62, 0.82);
+    addTombReward('jadeDuck', '碎玉鸭', jadeDuck, -3.75, -18.62);
+    const compass = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.20, 0.04, 24), rewardMat.bronze);
+    compass.rotation.x = Math.PI / 2;
+    addTombReward('yinyangCompass', '阴阳罗盘', compass, -3.35, -17.88);
+    const exitMark = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.05, 16), bronzeMat);
+    exitMark.position.set(5.3, 0.04, 0);
+    room.add(exitMark);
+    const crawlMark = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.10, 0.42), darkMat);
+    crawlMark.position.set(3.8, 0.08, -18.2);
+    room.add(crawlMark);
+    const ladderMat = makeNodeMat(vec3(0.46, 0.31, 0.16));
+    const waterLadder = new THREE.Group();
+    for (const lx of [-0.24, 0.24]) {
+      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 2.65, 8), ladderMat);
+      rail.position.set(lx, 1.22, 0);
+      rail.rotation.x = 0.22;
+      waterLadder.add(rail);
+    }
+    for (let i = 0; i < 7; i++) {
+      const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.62, 8), ladderMat);
+      rung.rotation.z = Math.PI / 2;
+      rung.position.set(0, 0.24 + i * 0.34, Math.sin(i * 0.7) * 0.025);
+      waterLadder.add(rung);
+    }
+    const wetGlow = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 6), bronzeMat);
+    wetGlow.position.set(0, 2.55, 0.03);
+    waterLadder.add(wetGlow);
+    waterLadder.position.set(13.25, 0.02, -4.75);
+    waterLadder.rotation.y = Math.PI / 2;
+    room.add(waterLadder);
+    const letterMat = makeNodeMat(vec3(0.58, 0.42, 0.20));
+    const inkMat = makeNodeMat(vec3(0.08, 0.055, 0.035));
+    const sealMat = makeNodeMat(vec3(0.74, 0.06, 0.04));
+    const letter = new THREE.Group();
+    for (let i = 0; i < 9; i++) {
+      const slip = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.035, 0.72), letterMat);
+      slip.position.set((i - 4) * 0.115, 0.035, 0);
+      letter.add(slip);
+      if (i % 2 === 0) {
+        const ink = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.018, 0.48), inkMat);
+        ink.position.set((i - 4) * 0.115, 0.065, 0.02);
+        letter.add(ink);
+      }
+    }
+    const cordA = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.025, 0.035), inkMat);
+    cordA.position.set(0, 0.09, -0.22);
+    const cordB = cordA.clone();
+    cordB.position.z = 0.22;
+    const seal = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.035, 16), sealMat);
+    seal.rotation.x = Math.PI / 2;
+    seal.position.set(0.46, 0.12, 0);
+    letter.add(cordA, cordB, seal);
+    letter.position.set(14.2, 0.18, 1.8);
+    letter.rotation.y = -0.35;
+    room.add(letter);
+    room.position.set(x, floorY, z);
+    scene.add(room);
+    relicSpots.tomb = {
+      x, z, y, floorY, room,
+      traps: [
+        { x: x + 1.65, z: z - 2.0, r: 1.35, safe: '左侧半格' },
+        { x: x - 1.65, z: z - 6.5, r: 1.35, safe: '右侧半格' },
+        { x: x + 1.65, z: z - 11.0, r: 1.35, safe: '左侧半格' },
+      ],
+      hintMeshes, sarcLid, tombRewards,
+      crawl: { x: x + 3.8, z: z - 18.2 },
+      water: { x: x + 14.2, z: z - 2.5 },
+      waterLadder: { x: x + 13.25, z: z - 4.75, mesh: waterLadder },
+      historian: { x: x + 14.2, z: z + 1.8, mesh: letter },
+    };
+  }
+  function trackTombShot(x, z, shot) {
+    if (relics.tombFound || !walker.on || walker.inBunker || walker.inTomb) return;
+    const gh = groundHeightAt(x, z);
+    if (gh < 0.25) return;
+    const yaw = shot.aimYaw ?? walker.viewYaw;
+    const pitch = shot.aimPitch ?? walker.viewPitch;
+    const sameSpot = tombShot.count > 0 && Math.hypot(x - tombShot.x, z - tombShot.z) < 4.5;
+    const sameView = tombShot.count > 0 && angleDelta(yaw, tombShot.yaw) < 0.018 && Math.abs(pitch - tombShot.pitch) < 0.018;
+    if (!sameSpot || !sameView) {
+      tombShot.count = 1;
+      tombShot.x = x; tombShot.z = z; tombShot.yaw = yaw; tombShot.pitch = pitch;
+      return;
+    }
+    tombShot.count++;
+    if ([25, 50, 75, 95].includes(tombShot.count)) {
+      showToast('地面裂纹越来越明显…… 连续同点射击 ' + tombShot.count + '/100');
+    }
+    if (tombShot.count >= 100) {
+      relics.tombFound = true;
+      const tx = x + Math.sin(yaw + Math.PI * 0.5) * 3.2;
+      const tz = z + Math.cos(yaw + Math.PI * 0.5) * 3.2;
+      createTombEntrance(tx, tz);
+      eggNavTarget = relicSpots.tomb;
+      showToast('🕳 地面塌开一道古墓盗洞!先收集铁锭/灯油/硬木柄,带上绳子和木材,在墓口按 E 制作盗墓装备');
+    }
+  }
+
+  function fireSwordTurret() {
+    const turret = walker.swordTurret;
+    if (!turret || shootCooldown > 0) return;
+    if (turret.ammo <= 0) { showToast('长剑炮台箭匣空了'); return; }
+    turret.ammo--;
+    shootCooldown = 0.22;
+    walker.shakeT = Math.max(walker.shakeT, 0.10);
+    const cp = Math.cos(walker.viewPitch);
+    const dx = Math.sin(walker.viewYaw) * cp, dy = Math.sin(walker.viewPitch), dz = Math.cos(walker.viewYaw) * cp;
+    turret.dir = walker.viewYaw;
+    turret.mesh.rotation.y = walker.viewYaw;
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.10, 1.35), arrowMat);
+    const oy = turret.y + SWORD_TURRET_EYE_LIFT;
+    blade.position.set(turret.x + dx * 1.2, oy + dy * 1.2, turret.z + dz * 1.2);
+    scene.add(blade);
+    flyingArrows.push({
+      x: blade.position.x, y: blade.position.y, z: blade.position.z,
+      px: blade.position.x, py: blade.position.y, pz: blade.position.z,
+      vx: dx * 155, vy: dy * 155, vz: dz * 155,
+      mesh: blade, stuck: false, life: 0, swordTurret: true, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
+    });
+    if (turret.ammo % 100 === 0 || turret.ammo < 20) showToast('⚔ 长剑炮台齐射!剩余箭矢 ' + turret.ammo + '/1000');
+  }
 
   function shootArrow() {
     if (!walker.on || shootCooldown > 0) return;
+    if (walker.swordTurret) { fireSwordTurret(); return; }
     if (fishing.active) {
       if (fishing.phase === 'bite') hookFish();
       else showToast('正钓着鱼 —— 咬钩时按空格收杆,H 收起鱼竿');
@@ -4415,6 +7132,8 @@ async function boot() {
     if (walker.weapon === 'sniper' && walker.sniper) { fireSniper(); return; }
     if (walker.weapon === 'smg' && walker.smg) { fireSMG(); return; }
     if (walker.weapon === 'rifle' && walker.rifle) { fireRifle(); return; }
+    if (walker.catapult && nearestPlacedCatapult(5.0)) { fireCatapult(); return; }
+    if (walker.weapon === 'spear' && walker.spear) { throwSpear(); return; }
     if (walker.arrows <= 0) {
       showToast('没箭了 —— 按 Q 用 1 木柴 + 1 石块打磨 3 支');
       return;
@@ -4431,7 +7150,8 @@ async function boot() {
     flyingArrows.push({
       x: mesh.position.x, y: mesh.position.y, z: mesh.position.z,
       vx: dx * 46, vy: dy * 46, vz: dz * 46,
-      mesh, stuck: false, life: 0,
+      sx: walker.x, sz: walker.z,
+      mesh, stuck: false, life: 0, aimYaw: walker.viewYaw, aimPitch: walker.viewPitch,
     });
   }
 
@@ -4439,7 +7159,10 @@ async function boot() {
   function updateHunt(t, dt) {
     shootCooldown = Math.max(0, shootCooldown - dt);
     // 冲锋枪:按住空格全自动泼洒
-    if (walker.on && spaceHeld && walker.weapon === 'smg' && walker.smg && !fishing.active) fireSMG();
+    if (walker.on && spaceHeld && !fishing.active) {
+      if (walker.swordTurret) fireSwordTurret();
+      else if (walker.weapon === 'smg' && walker.smg) fireSMG();
+    }
     const threat = walker.on ? walker : null;
     // 猎物 AI
     for (const h of huntables) {
@@ -4514,7 +7237,8 @@ async function boot() {
       const a = flyingArrows[i];
       a.life += dt;
       if (!a.stuck) {
-        a.vy -= 9.8 * dt;
+        a.px = a.x; a.py = a.y; a.pz = a.z;
+        if (!a.swordTurret) a.vy -= 9.8 * dt;
         a.x += a.vx * dt; a.y += a.vy * dt; a.z += a.vz * dt;
         a.mesh.position.set(a.x, a.y, a.z);
         _av.set(a.vx, a.vy, a.vz).normalize();
@@ -4532,6 +7256,23 @@ async function boot() {
         }
         // 白鹭:小目标,箭/子弹都能打落
         if (!hit) {
+          for (const tox of toxicAnimals) {
+            if (tox.dead) continue;
+            const ty = newIslandHeightAt(tox.x, tox.z) + 0.18;
+            if (Math.hypot(a.x - tox.x, a.y - ty, a.z - tox.z) < 0.45) {
+              hit = true;
+              tox.dead = true;
+              tox.mesh.visible = false;
+              tox.respawnT = 120;
+              if (a.spear && walker.savage) {
+                walker.venom++;
+                showToast((tox.kind === 'snake' ? '🐍' : '☠') + ' 长矛刺中毒物,提取毒液 +1(Q 可制作毒矛)');
+              } else showToast('击中了毒物,但没有野人手法,毒液浪费了');
+              break;
+            }
+          }
+        }
+        if (!hit) {
           for (const an of animals) {
             if (an.kind !== 'egret' || an.state === 'dead' || an.harvested) continue;
             const ey = an.mesh.position.y + 0.42;
@@ -4544,19 +7285,62 @@ async function boot() {
             }
           }
         }
+        // 椰壳靶架:普通弓箭可射击练准头,命中后加靶分并给小奖励
+        if (!hit && !a.bullet && !a.spear && !a.catapult && !a.swordTurret) {
+          for (const ct of curios) {
+            if (ct.kind !== 'coconutTarget' || ct.taken) continue;
+            const cy = ct.y + 0.92;
+            const d = distPointToSegment(ct.x, cy, ct.z, a.px, a.py, a.pz, a.x, a.y, a.z);
+            if (d < 0.42) {
+              hit = true;
+              if ((ct.challengeT || 0) <= 0) {
+                showToast('🥥 靶架命中了,但没开限时挑战 —— 先靠近按 E 开始');
+                break;
+              }
+              const shotD = Math.hypot((a.sx ?? walker.x) - ct.x, (a.sz ?? walker.z) - ct.z);
+              if (shotD < 8 || shotD > 28) {
+                showToast('🥥 靶架命中了,但距离不算数 · 有效距离 8-28 米,本箭 ' + Math.round(shotD) + ' 米');
+                break;
+              }
+              const bullseye = d < 0.16;
+              const pts = bullseye ? 10 : 4;
+              ct.score = (ct.score || 0) + pts;
+              ct.hitT = 0.8;
+              ct.challengeT = 0;
+              ct.cd = 42;
+              walker.targetScore = (walker.targetScore || 0) + pts;
+              walker.arrows += bullseye ? 2 : 1;
+              let bonus = '';
+              if (bullseye) {
+                const roll = Math.random();
+                if (roll < 0.40) { walker.seaGlass++; bonus = ' · 海玻璃 +1'; }
+                else if (roll < 0.72) { walker.seaPearl++; bonus = ' · 海珠 +1'; }
+                else { walker.shellCharm++; bonus = ' · 贝壳护符 +1'; }
+              } else if (Math.random() < 0.35) {
+                walker.casing++;
+                bonus = ' · 铜壳 +1';
+              }
+              walker.shakeT = Math.max(walker.shakeT, 0.18);
+              showToast((bullseye ? '🎯 椰壳靶架正中靶心!' : '🥥 椰壳靶架命中外环!')
+                + ' +' + pts + ' 分 · 靶分累计 ' + walker.targetScore
+                + ' · 回收箭 +' + (bullseye ? 2 : 1) + bonus);
+              break;
+            }
+          }
+        }
         // 万斤巨物:庞大的身躯是最好中的靶子(所有在场泰坦)
         for (const gt of titans) {
           if (hit || gt.state !== 'rage') continue;
           const gd = Math.hypot(a.x - gt.x, a.y - (gt.y + 10), a.z - gt.z);
           if (gd < 45) {
             hit = true;
-            gt.hp -= a.sniper ? 15 : (a.smg ? 2 : (a.bullet ? (walker.buff ? 6 : 3) : (walker.buff ? 5 : 1)));
+            gt.hp -= a.swordTurret ? 18 : a.sniper ? 15 : (a.smg ? 2 : (a.bullet ? (walker.buff ? 6 : 3) : (walker.buff ? 5 : 1)));
             if (gt.hp <= 0) {
               killTitan(gt);
               showToast('☠ 虚空泰坦 · ' + gt.sp.name + ' 翻起了雪白的肚皮…… 漂到岸边后按 E '
                 + (myTamedTitan() ? '让泰坦融合它' : '割取神肉') + '(已猎杀 ' + titansSlain + '/' + TITAN_MAX + ')');
             } else {
-              showToast((a.sniper ? '🎯 狙击弹撕开泰坦皮肉!' : a.bullet ? '🔫 子弹钻进泰坦皮肉!' : '🏹 射中泰坦!')
+              showToast((a.swordTurret ? '⚔ 长剑炮台贯入泰坦皮肉!' : a.sniper ? '🎯 狙击弹撕开泰坦皮肉!' : a.bullet ? '🔫 子弹钻进泰坦皮肉!' : '🏹 射中泰坦!')
                 + '(' + gt.sp.name + ' 生命 ' + gt.hp + '/' + gt.maxHp + ')');
             }
           }
@@ -4566,13 +7350,44 @@ async function boot() {
           for (const sv of savages) {
             if (sv.dead) continue;
             const sy = newIslandHeightAt(sv.x, sv.z);
-            if (Math.hypot(a.x - sv.x, a.y - (sy + 0.9), a.z - sv.z) < 0.65) {
+            const savageHit = a.swordTurret
+              ? distPointToSegment(sv.x, sy + 0.95, sv.z, a.px, a.py, a.pz, a.x, a.y, a.z) < 1.85
+              : Math.hypot(a.x - sv.x, a.y - (sy + 0.9), a.z - sv.z) < 0.65;
+            if (savageHit) {
               hit = true;
-              sv.hp -= a.bullet ? 2 : 1;
+              if (a.swordTurret) {
+                sv.hp -= sv.elder ? 7 : 999;
+                if (sv.hp <= 0) {
+                  markSavageDead(sv, sv.elder ? 999 : 90);
+                  showToast(sv.elder ? '⚔ 长剑炮台刺穿野人长老!长老队崩溃了' : '⚔ 长剑炮台一剑贯穿野人!');
+                } else {
+                  sv.aggroT = Math.max(sv.aggroT || 0, 180);
+                  showToast('⚔ 长剑炮台命中野人长老!他还剩 ' + sv.hp + '/' + sv.maxHp + ' 生命,仇恨已锁定你');
+                }
+                break;
+              }
+              const savageDmg = a.swordTurret ? 55
+                : a.catapult ? 95
+                  : a.sniper ? 100
+                    : a.smg ? 60
+                      : a.bullet ? 50
+                        : a.spear ? (a.savageRole === 'swordsman' ? 70 : a.savageRole === 'shield' ? 45 : 55)
+                          : 50;
+              sv.hp -= savageDmg;
+              if (!a.bullet && !a.spear && !a.catapult && !a.swordTurret) {
+                const pts = sv.hp <= 0 ? 8 : 3;
+                walker.bowFightScore = (walker.bowFightScore || 0) + pts;
+                if (sv.hp > 0) {
+                  sv.aggroT = Math.max(sv.aggroT || 0, 120);
+                  showToast('🏹 弓箭命中野人 +' + pts + ' 战斗分 · 弓战累计 ' + walker.bowFightScore + ' · 对方生命 ' + sv.hp + '/' + sv.maxHp);
+                  break;
+                }
+              }
               if (sv.hp <= 0) {
-                sv.dead = true; sv.fallK = 0; sv.respawnT = 90;
-                showToast((a.bullet ? '🔫 一枪' : '🏹 一箭') + '放倒了野人!');
-              } else showToast('野人挨了一下,嗷嗷直叫!');
+                markSavageDead(sv, 90);
+                showToast((a.swordTurret ? '⚔ 长剑炮台' : a.catapult ? '🪨 一发巨石' : a.sniper ? '🎯 狙击弹' : a.smg ? '🔫 冲锋枪' : a.bullet ? '🔫 步枪' : a.spear ? '🗡 一矛' : '🏹 一箭') + '放倒了野人!'
+                  + (!a.bullet && !a.spear && !a.catapult && !a.swordTurret ? ' +8 战斗分 · 弓战累计 ' + walker.bowFightScore : ''));
+              } else showToast((a.sniper ? '🎯 狙击弹' : a.smg ? '🔫 冲锋枪' : a.bullet ? '🔫 步枪子弹' : '野人') + '命中野人 · 伤害 ' + savageDmg + ' · 剩余生命 ' + sv.hp + '/' + sv.maxHp);
               break;
             }
           }
@@ -4584,24 +7399,35 @@ async function boot() {
             if ((p.mode === 'walk' || p.mode === 'ride')
                 && Math.hypot(a.x - p.cx, a.y - (p.cy + 0.9), a.z - p.cz) < 0.8) {
               hit = true;
-              const dmg = a.sniper ? 45 : (a.smg ? 8 : (a.bullet ? 30 : 15));
-              mp.ws.send(JSON.stringify({ t: 'hit', target: p.id, dmg, kind: a.bullet ? 'bullet' : 'arrow' }));
-              showToast('🎯 命中好友!对方生命 -' + dmg);
+              const spearDmg = a.savageRole === 'swordsman' ? 48 : a.savageRole === 'shield' ? 28 : a.savageRole === 'poisoner' ? 32 : 38;
+              const dmg = a.catapult ? 95 : (a.swordTurret ? 55 : (a.spear ? spearDmg : (a.sniper ? 45 : (a.smg ? 8 : (a.bullet ? 30 : 15)))));
+              mp.ws.send(JSON.stringify({ t: 'hit', target: p.id, dmg, kind: a.poison ? 'poison-spear' : a.catapult ? 'catapult' : a.swordTurret ? 'sword-turret' : a.spear ? 'spear' : a.bullet ? 'bullet' : 'arrow', poison: !!a.poison }));
+              showToast(a.poison ? '☠ 毒矛命中好友!对方会视野模糊并持续掉血' : '🎯 命中好友!对方生命 -' + dmg);
             } else if (p.tg && Math.hypot(a.x - p.tgx, a.y - (p.tgy + 10), a.z - p.tgz) < 40) {
               hit = true;
-              const dmg = a.sniper ? 15 : (a.smg ? 2 : (a.bullet ? 3 : 1));
+              const dmg = a.catapult ? 8 : (a.swordTurret ? 5 : (a.sniper ? 15 : (a.smg ? 2 : (a.bullet ? 3 : a.spear ? 2 : 1))));
               mp.ws.send(JSON.stringify({ t: 'thit', target: p.id, dmg }));
               showToast('🎯 射中了好友的泰坦!');
             }
           }
         }
-        if (hit) { scene.remove(a.mesh); flyingArrows.splice(i, 1); continue; }
+        if (hit) {
+          if (a.catapult) { spawnImpactRing(a.x, a.z, 8); applyCatapultAOE(a.x, a.z, 8); }
+          scene.remove(a.mesh); flyingArrows.splice(i, 1); continue;
+        }
         const gh = groundHeightAt(a.x, a.z);
         if (a.y <= gh + 0.03) {           // 箭插进地里可回收;子弹直接没入土中
+          trackTombShot(a.x, a.z, a);
+          if (a.catapult) {
+            spawnImpactRing(a.x, a.z, 8);
+            applyCatapultAOE(a.x, a.z, 8);
+            scene.remove(a.mesh); flyingArrows.splice(i, 1); continue;
+          }
           if (a.bullet) { scene.remove(a.mesh); flyingArrows.splice(i, 1); continue; }
           a.stuck = true;
           a.y = gh + 0.03;
         } else if (a.y < waveHeightAt(a.x, a.z, t, seaStateEff) && gh < -0.5) {
+          if (a.catapult) { spawnImpactRing(a.x, a.z, 8); applyCatapultAOE(a.x, a.z, 8); }
           scene.remove(a.mesh); flyingArrows.splice(i, 1); continue;   // 落水
         }
       }
@@ -4772,34 +7598,127 @@ async function boot() {
   const speedBoat = boats[1];
   const walker = {
     on: false, x: 0, z: 0, y: 0, heading: 0, phase: 0, viewYaw: 0, viewPitch: 0,
-    stamina: 100, hunger: 100, thirst: 100, wood: 0, coconut: 0, faintT: 0,
-    hp: 100, bombs: 2, bombCd: 0, savage: false,        // 生命;磁吸炸弹;野人形态
-    arrows: 10, traps: 3, stone: 0, meat: 0, shakeT: 0,   // 开局:10 支箭 + 3 个陷阱
+    stamina: 100, hunger: 100, thirst: 100, wood: 0, timber: 0, rope: 0, coconut: 0, faintT: 0,
+    hp: PLAYER_HP_MAX, godMode: false, bombs: 5, bombCd: 0, bombAdmin: false, savage: false, savageRole: '', // 生命;无敌;磁吸炸弹;野人形态/职业
+    spear: false, catapult: false, villageLooted: false, // 野人专属:长矛/投石机/村落智慧
+    catapultAmmo: 0, cuttingRock: null, carryingCatapult: null, // 投石机巨石弹;切割任务;搬运中的炮台
+    arrows: 10, traps: 3, stone: 0, meat: 0, shakeT: 0, jumpT: 0,   // 开局:10 支箭 + 3 个陷阱
     pots: 1, godMeat: 0, buff: false,                    // 1 个捕蟹笼;神肉与异能
+    scrap: 0, gear: 0, powder: 0, lead: 0, casing: 0, primer: 0, // 枪械/弹药材料
+    tombIron: 0, tombLamp: 0, tombHandle: 0, inTomb: false, // 盗墓装备材料/墓室状态
     rifle: false, bullets: 0, weapon: 'bow',             // 老兵的步枪(找到后按 2 切换)
     sniper: false, sniperAmmo: 0,                        // 卡莫星狙击枪(箱底夹层,两发放倒虚空泰坦)
-    smg: false, smgAmmo: 0, inBunker: false,             // 波波沙冲锋枪(地下军火库,按住空格连发)
+    smg: false, smgAmmo: 0, inBunker: false, poisonT: 0, poisonBlurT: 0, venom: 0, poisonSpear: 0, // 冲锋枪;中毒/毒液/毒矛
+    peachSword: false, tombBronze: 0, tombJade: 0, tombBottle: 0, tombDigT: 0, tombDigTotal: 0, tombCrawlT: 0, tombCrawlBack: false,
+    seaPearl: 0, seaGlass: 0, shellCharm: 0, driftToken: 0, oceanTear: 0, targetScore: 0, bowFightScore: 0, // 荒岛奇物收藏
+    swordTurret: null,                          // 长城最高烽火台固定长剑炮台
   };
   let shiftDown = false;
   let spaceHeld = false;        // 冲锋枪全自动要用
+  const recall = { active: false, t: 0, target: null, lastPing: -1 };
+  const GOD_MODE_PASSWORD = '123456789';
+
+  function walkerMaxHp() {
+    return walker.savageRole === 'shield' ? 260
+      : walker.savageRole === 'swordsman' ? 220
+        : walker.savageRole === 'poisoner' ? 180 : PLAYER_HP_MAX;
+  }
+
+  function toggleGodMode() {
+    const pwd = window.prompt('无敌之身密码:');
+    if (pwd === null) return;
+    if (pwd.trim() !== GOD_MODE_PASSWORD) {
+      showToast('无敌之身密码错误');
+      return;
+    }
+    walker.godMode = !walker.godMode;
+    if (walker.godMode) {
+      walker.hp = walkerMaxHp();
+      walker.stamina = walker.buff ? 200 : 100;
+      walker.hunger = 100;
+      walker.thirst = 100;
+      walker.poisonT = 0;
+      walker.poisonBlurT = 0;
+      walker.faintT = 0;
+      walker.shakeT = 0;
+    }
+    $('ih-godmode').style.display = walker.godMode ? 'flex' : 'none';
+    showToast(walker.godMode
+      ? '👑 无敌之身已开启 · 任何攻击、毒伤和机关都无法伤害你'
+      : '无敌之身已关闭');
+  }
+
+  function isNearSecondIslandByBoat() {
+    if (!driving || Math.abs(driveTarget.u) >= 3) return false;
+    const centerD = Math.hypot(driveTarget.x - NEW_ISLAND.x, driveTarget.z - NEW_ISLAND.z);
+    if (centerD > NEW_ISLAND.R * 1.55) return false;
+    const here = newIslandHeightAt(driveTarget.x, driveTarget.z);
+    if (here > -9) return true;
+    const dx = NEW_ISLAND.x - driveTarget.x, dz = NEW_ISLAND.z - driveTarget.z;
+    const dd = Math.hypot(dx, dz) || 1;
+    for (let s = 0; s < Math.min(260, NEW_ISLAND.R * 0.95); s += 5) {
+      if (newIslandHeightAt(driveTarget.x + dx / dd * s, driveTarget.z + dz / dd * s) > 0.8) return true;
+    }
+    return false;
+  }
+
+  function disembarkInfo() {
+    if (!driving || Math.abs(driveTarget.u) >= 3) return null;
+    const islandList = [
+      { isle: ISLAND, height: islandHeightAt },
+    ];
+    if (relics.yinyangCompass) {
+      islandList.push({ isle: THIRD_ISLAND, height: (x, z) => remoteIslandHeightAt(THIRD_ISLAND, x, z) });
+      islandList.push({ isle: FOURTH_ISLAND, height: (x, z) => remoteIslandHeightAt(FOURTH_ISLAND, x, z) });
+    }
+    const candidates = [];
+    for (const item of islandList) {
+      const centerD = Math.hypot(driveTarget.x - item.isle.x, driveTarget.z - item.isle.z);
+      if (centerD > item.isle.R * 1.55) continue;
+      const here = item.height(driveTarget.x, driveTarget.z);
+      if (here > -9) {
+        candidates.push({ ...item, centerD, here, edge: Math.abs(centerD - item.isle.R * 1.35) });
+        continue;
+      }
+      const dx = item.isle.x - driveTarget.x, dz = item.isle.z - driveTarget.z;
+      const dd = Math.hypot(dx, dz) || 1;
+      for (let s = 0; s < Math.min(260, item.isle.R * 0.95); s += 5) {
+        if (item.height(driveTarget.x + dx / dd * s, driveTarget.z + dz / dd * s) > 0.8) {
+          candidates.push({ ...item, centerD, here, edge: Math.abs(centerD - item.isle.R * 1.35) });
+          break;
+        }
+      }
+    }
+    candidates.sort((a, b) => a.edge - b.edge);
+    return candidates[0] || null;
+  }
 
   function canDisembark() {
-    return driving && islandHeightAt(driveTarget.x, driveTarget.z) > -7
-      && Math.abs(driveTarget.u) < 3;
+    return !!disembarkInfo();
+  }
+
+  function isOnSecondIsland() {
+    return walker.on && newIslandHeightAt(walker.x, walker.z) > 0.5;
+  }
+
+  function updateKeysHelpPanel() {
+    $('keys-help').classList.toggle('show-second', isOnSecondIsland());
   }
 
   function enterIsland() {
-    // 从船位向岛心推进,找到第一块干滩作为登陆点
-    const dx = ISLAND.x - driveTarget.x, dz = ISLAND.z - driveTarget.z;
+    // 从船位向最近可登岛屿的岛心推进,找到第一块干滩作为登陆点
+    const target = disembarkInfo();
+    if (!target) { showToast('这里离海滩还太远或船速太快 —— 靠近浅滩减速再按 V'); return; }
+    const dx = target.isle.x - driveTarget.x, dz = target.isle.z - driveTarget.z;
     const dd = Math.hypot(dx, dz) || 1;
-    let lx = ISLAND.x, lz = ISLAND.z;
-    for (let s = 0; s < 160; s += 2) {
+    let lx = target.isle.x, lz = target.isle.z;
+    for (let s = 0; s < Math.min(720, target.isle.R * 1.7); s += 2) {
       const x = driveTarget.x + (dx / dd) * s, z = driveTarget.z + (dz / dd) * s;
-      if (islandHeightAt(x, z) > 0.8) { lx = x; lz = z; break; }
+      if (target.height(x, z) > 0.8) { lx = x; lz = z; break; }
     }
     setDriving(false);
     walker.on = true;
-    walker.x = lx; walker.z = lz; walker.y = islandHeightAt(lx, lz);
+    walker.x = lx; walker.z = lz; walker.y = target.height(lx, lz);
     walker.heading = walker.viewYaw = Math.atan2(dx, dz);
     walker.viewPitch = -0.04;
     avatar.visible = false;                 // 第一人称:只有一双手
@@ -4810,16 +7729,116 @@ async function boot() {
     camera.lookAt(lx + Math.sin(walker.viewYaw), walker.y + 1.55, lz + Math.cos(walker.viewYaw));
     $('island-hud').classList.add('show');
     $('xhair').classList.add('show');
+    updateKeysHelpPanel();
     $('keys-help').classList.add('show');     // 登岛显示一遍全部键位(K 键随时开关)
-    showToast('WASD 移动 · Shift 疾跑 · 空格射箭 · 4 开镜 · E 互动 · K 键位面板');
+    showToast('WASD 移动 · Shift 疾跑 · 1 跳跃/攀爬 · 空格射击 · 4 开镜 · E 互动 · K 键位面板');
+  }
+
+  let island2TestMode = false;
+  let island2TestRespawn = null;
+  function isIsland2TestRoute() {
+    const path = window.location.pathname || '';
+    const qs = window.location.search || '';
+    return path.includes('ocean-island2-test') || qs.includes('island2-test');
+  }
+  function restoreIsland2TestWalker(reason) {
+    const spot = island2TestRespawn || relicSpots.greatWall || relicSpots.camp || { x: NEW_ISLAND.x, z: NEW_ISLAND.z };
+    let lx = spot.x, lz = spot.z, ly = groundHeightAt(lx, lz);
+    for (let r = 0; r < 80; r += 4) {
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * Math.PI * 2;
+        const x = spot.x + Math.cos(a) * r;
+        const z = spot.z + Math.sin(a) * r;
+        const y = groundHeightAt(x, z);
+        if (newIslandHeightAt(x, z) > 1.2 && y > 1.2 && y < 38) {
+          lx = x; lz = z; ly = y;
+          r = 999;
+          break;
+        }
+      }
+    }
+    setDriving(false);
+    pilotSub = false;
+    riding = false;
+    walker.on = true;
+    walker.inBunker = false;
+    walker.inTomb = false;
+    walker.swordTurret = null;
+    walker.hp = Math.max(80, walker.hp || PLAYER_HP_MAX);
+    walker.hunger = 65;
+    walker.thirst = 65;
+    walker.stamina = 60;
+    walker.faintT = 0;
+    walker.x = lx; walker.z = lz; walker.y = ly;
+    walker.heading = walker.viewYaw = Math.atan2(NEW_ISLAND.x - lx, NEW_ISLAND.z - lz);
+    walker.viewPitch = -0.06;
+    avatar.visible = false;
+    handsGroup.visible = true;
+    controls.enabled = false;
+    controls.target.set(lx, ly + 1.4, lz);
+    camera.position.set(lx, ly + 1.62, lz);
+    camera.lookAt(lx + Math.sin(walker.viewYaw), ly + 1.55, lz + Math.cos(walker.viewYaw));
+    setAim(false);
+    $('island-hud').classList.add('show');
+    $('xhair').classList.add('show');
+    updateKeysHelpPanel();
+    showToast(reason || '第二岛测试版:你在雨林营地边醒来,没有被传回船上');
+  }
+  function startIsland2TestIfNeeded() {
+    if (!isIsland2TestRoute()) return;
+    island2TestMode = true;
+    let lx = NEW_ISLAND.x, lz = NEW_ISLAND.z, ly = newIslandHeightAt(lx, lz);
+    const base = relicSpots.greatWall || relicSpots.camp || { x: NEW_ISLAND.x, z: NEW_ISLAND.z };
+    for (let r = 18; r < 120; r += 4) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const x = base.x + Math.cos(a) * r;
+        const z = base.z + Math.sin(a) * r;
+        const y = groundHeightAt(x, z);
+        if (newIslandHeightAt(x, z) > 1.2 && y > 1.2 && y < 38) {
+          lx = x; lz = z; ly = y;
+          r = 999;
+          break;
+        }
+      }
+    }
+    island2TestRespawn = { x: lx, z: lz };
+    setDriving(false);
+    pilotSub = false;
+    riding = false;
+    newIsland.unlocked = true;
+    newIsland.landedT = 0;
+    walker.on = true;
+    walker.inBunker = false;
+    walker.swordTurret = null;
+    walker.x = lx; walker.z = lz; walker.y = ly;
+    walker.heading = walker.viewYaw = Math.atan2(NEW_ISLAND.x - lx, NEW_ISLAND.z - lz);
+    walker.viewPitch = -0.06;
+    avatar.visible = false;
+    handsGroup.visible = true;
+    controls.enabled = false;
+    controls.target.set(lx, ly + 1.4, lz);
+    camera.position.set(lx, ly + 1.62, lz);
+    camera.lookAt(lx + Math.sin(walker.viewYaw), ly + 1.55, lz + Math.cos(walker.viewYaw));
+    $('island-hud').classList.add('show');
+    $('xhair').classList.add('show');
+    updateKeysHelpPanel();
+    $('keys-help').classList.add('show');
+    showToast('第二岛测试版:已直接出生在迷雾雨林岛 · 野人 30 秒后才会行动 · E 互动/K 键位');
   }
 
   function exitIsland(fainted) {
+    if (fainted && island2TestMode) {
+      restoreIsland2TestWalker('第二岛测试版:你昏倒后在雨林营地边醒来,不会再被传回快艇');
+      return;
+    }
     walker.on = false;
+    walker.swordTurret = null;
     avatar.visible = false;
     handsGroup.visible = false;
     setAim(false);                            // 离岛收镜
     $('keys-help').classList.remove('show');
+    $('keys-help').classList.remove('show-second');
     $('island-hud').classList.remove('show');
     $('xhair').classList.remove('show');
     controls.enabled = true;
@@ -4834,25 +7853,70 @@ async function boot() {
 
   // ---- 生命值:受击扣血;归零 → 死亡重生 ----
   // 到了新岛后死亡可选择:回旧岛重来,或变成野人在新岛重生
-  function damageWalker(dmg, cause) {
+  function damageWalker(dmg, cause, noDeath = false) {
     if (!walker.on || walker.hp <= 0) return;
+    if (walker.godMode) {
+      walker.hp = walkerMaxHp();
+      return;
+    }
+    cancelRecall('受到攻击,回城中断');
+    if (walker.savageRole === 'shield') dmg = Math.max(1, Math.round(dmg * 0.65));
     walker.hp = Math.max(0, walker.hp - dmg);
     walker.shakeT = Math.max(walker.shakeT, 0.5);
-    if (walker.hp <= 0) dieAndRespawn(cause);
+    if (walker.hp <= 0 && !noDeath) dieAndRespawn(cause);
+  }
+  function titanKnockout(source) {
+    if (walker.godMode) {
+      walker.hp = walkerMaxHp();
+      walker.stamina = walker.buff ? 200 : 100;
+      return;
+    }
+    walker.hp = Math.max(1, walker.hp);
+    walker.faintT = 0;
+    showToast('你被' + source + '拍晕了……同伴把你拖回了快艇');
+    exitIsland(true);
+  }
+  function applyPoison(seconds, initialDmg, source) {
+    if (walker.godMode) {
+      walker.poisonT = 0;
+      walker.poisonBlurT = 0;
+      return;
+    }
+    walker.poisonT = Math.max(walker.poisonT, seconds);
+    walker.poisonBlurT = Math.max(walker.poisonBlurT, Math.min(6, seconds * 0.45));
+    if (initialDmg > 0) damageWalker(initialDmg, source || '中毒身亡');
   }
   function dieAndRespawn(cause) {
     showToast('☠ ' + cause + ' —— 你嗝屁了……');
     if (riding) { riding = false; }
     const reachedNew = newIsland.unlocked;             // 是否已解锁新岛
     let toNew = false, asSavage = false;
+    let role = '';
     if (reachedNew) {
       const c = window.prompt('你死了!选择重生方式:\n输入 1 —— 回到旧的荒岛重来\n输入 2 —— 变成野人,在新的荒岛上重生', '1');
-      if (c !== null && c.trim() === '2') { toNew = true; asSavage = true; }
+      if (c !== null && c.trim() === '2') {
+        toNew = true; asSavage = true;
+        const r = window.prompt('选择野人职业:\n1 野人剑士:生命 220,近战更猛\n2 长矛战士:生命 200,投矛标准型\n3 盾兵:生命 260,承伤 -35%,移动慢\n4 炼毒师:生命 180,初始毒液和毒矛', '2');
+        role = r && r.trim() === '1' ? 'swordsman'
+          : r && r.trim() === '3' ? 'shield'
+            : r && r.trim() === '4' ? 'poisoner' : 'spearman';
+      }
     }
     // 重置状态(保留武器,物资清零)
-    walker.hp = 100; walker.stamina = 100; walker.hunger = 80; walker.thirst = 80;
+    walker.hp = PLAYER_HP_MAX; walker.stamina = 100; walker.hunger = 80; walker.thirst = 80;
     walker.faintT = 0; walker.shakeT = 0; walker.inBunker = false;
+    walker.swordTurret = null;
     walker.savage = asSavage;
+    walker.savageRole = asSavage ? role : '';
+    if (asSavage) {
+      walker.spear = true;
+      walker.weapon = 'spear';
+      walker.hp = role === 'shield' ? 260 : role === 'swordsman' ? 220 : role === 'poisoner' ? 180 : PLAYER_HP_MAX;
+      if (role === 'poisoner') { walker.venom += 3; walker.poisonSpear += 4; }
+      if (role === 'shield') walker.stamina = 80;
+      $('ih-weapon-item').style.display = 'flex';
+      $('ih-bullets-item').style.display = 'none';
+    }
     const cx = toNew ? NEW_ISLAND.x : ISLAND.x, cz = toNew ? NEW_ISLAND.z : ISLAND.z;
     const hh = toNew ? newIslandHeightAt : islandHeightAt;
     let lx = cx, lz = cz;
@@ -4868,11 +7932,760 @@ async function boot() {
     $('xhair').classList.add('show');
     $('keys-help').classList.add('show');     // 重生也显示一遍键位
     showToast(asSavage
-      ? '🧟 你重生为野人!在新岛上奔跑吧(生命/速度强化)'
+      ? '🧟 你重生为' + (role === 'shield' ? '盾兵' : role === 'swordsman' ? '野人剑士' : role === 'poisoner' ? '炼毒师' : '长矛战士')
+        + '!生命 ' + walker.hp + ' · 去野人村落探索智慧武器'
       : '🌅 你在海滩上醒来,决定东山再起');
   }
 
+  function nearestWorkbench(maxD = 4.2) {
+    let best = null;
+    for (const wb of workbenches) {
+      const d = Math.hypot(wb.x - walker.x, wb.z - walker.z);
+      if (d < maxD && (!best || d < best.d)) best = { ...wb, d };
+    }
+    return best;
+  }
+  function nearestGunPart(maxD = 2.7) {
+    let best = null;
+    for (const gp of gunParts) {
+      if (gp.taken) continue;
+      const d = Math.hypot(gp.x - walker.x, gp.z - walker.z);
+      if (d < maxD && (!best || d < best.d)) best = { ...gp, d };
+    }
+    return best;
+  }
+  function nearestTombMaterial(maxD = 2.7) {
+    let best = null;
+    for (const tm of tombMaterials) {
+      if (tm.taken) continue;
+      const d = Math.hypot(tm.x - walker.x, tm.z - walker.z);
+      if (d < maxD && (!best || d < best.d)) best = { ...tm, d };
+    }
+    return best;
+  }
+  function tombMaterialLine() {
+    return '盗墓材料:铁锭 ' + walker.tombIron + '/6 · 灯油 ' + walker.tombLamp + '/2 · 硬木柄 '
+      + walker.tombHandle + '/2 · 绳子 ' + walker.rope + '/2 · 木材 ' + walker.timber + '/4';
+  }
+  function spendTombMaterials() {
+    if (walker.tombIron < 6 || walker.tombLamp < 2 || walker.tombHandle < 2 || walker.rope < 2 || walker.timber < 4) {
+      showToast('盗墓装备还缺材料 —— ' + tombMaterialLine());
+      return false;
+    }
+    walker.tombIron -= 6;
+    walker.tombLamp -= 2;
+    walker.tombHandle -= 2;
+    walker.rope -= 2;
+    walker.timber -= 4;
+    relics.tombKit = true;
+    startTombDig();
+    showToast('⛏ 装备备齐:洛阳铲、探灯、绳梯和支护木梁已经做好 —— 开始打盗洞');
+    return true;
+  }
+  const tombDigClods = [];
+  const tombDigMat = makeNodeMat(vec3(0.36, 0.24, 0.14));
+  const tombDigGeo = new THREE.IcosahedronGeometry(0.06, 0);
+  function spawnTombDirt() {
+    if (!relicSpots.tomb) return;
+    const a = Math.random() * Math.PI * 2;
+    const r = 0.25 + Math.random() * 0.8;
+    const mesh = new THREE.Mesh(tombDigGeo, tombDigMat);
+    mesh.position.set(relicSpots.tomb.x + Math.cos(a) * r, relicSpots.tomb.y + 0.18, relicSpots.tomb.z + Math.sin(a) * r);
+    scene.add(mesh);
+    tombDigClods.push({ mesh, t: 0, vx: Math.cos(a) * (1.1 + Math.random()), vy: 1.4 + Math.random() * 1.2, vz: Math.sin(a) * (1.1 + Math.random()) });
+  }
+  function startTombDig() {
+    if (!relics.tombKit || relics.tombDug || !relicSpots.tomb) return false;
+    if (walker.tombDigT > 0) { showToast('正在用洛阳铲打盗洞…… ' + Math.ceil(walker.tombDigT) + 's'); return true; }
+    walker.tombDigT = 5.2;
+    walker.tombDigTotal = 5.2;
+    walker.x = relicSpots.tomb.x + 2.4;
+    walker.z = relicSpots.tomb.z + 1.4;
+    walker.y = groundHeightAt(walker.x, walker.z);
+    walker.viewYaw = Math.atan2(relicSpots.tomb.x - walker.x, relicSpots.tomb.z - walker.z);
+    walker.viewPitch = -0.48;
+    startHandAction('dig');
+    showToast('⛏ 洛阳铲入土!正在刨开盗洞口,别乱动');
+    return true;
+  }
+  function updateTombDig(dt) {
+    for (let i = tombDigClods.length - 1; i >= 0; i--) {
+      const c = tombDigClods[i];
+      c.t += dt;
+      c.vy -= 4.8 * dt;
+      c.mesh.position.x += c.vx * dt;
+      c.mesh.position.y += c.vy * dt;
+      c.mesh.position.z += c.vz * dt;
+      c.mesh.scale.setScalar(Math.max(0.1, 1 - c.t * 1.8));
+      if (c.t > 0.65) { scene.remove(c.mesh); tombDigClods.splice(i, 1); }
+    }
+    if (walker.tombDigT <= 0) return;
+    walker.tombDigT = Math.max(0, walker.tombDigT - dt);
+    if (!hands.action) startHandAction('dig');
+    if (Math.random() < dt * 12) spawnTombDirt();
+    if (relicSpots.tomb) {
+      walker.x = relicSpots.tomb.x + 2.4;
+      walker.z = relicSpots.tomb.z + 1.4;
+      walker.y = groundHeightAt(walker.x, walker.z);
+      walker.viewYaw = Math.atan2(relicSpots.tomb.x - walker.x, relicSpots.tomb.z - walker.z);
+      walker.viewPitch = -0.48 + Math.sin((walker.tombDigTotal - walker.tombDigT) * 8) * 0.07;
+    }
+    if (walker.tombDigT <= 0) {
+      relics.tombDug = true;
+      startHandAction('pickup');
+      showToast('🕳 盗洞打通了!土层塌出一个能下人的口子 —— 现在按 E 顺绳梯下墓');
+    }
+  }
+  function enterTomb() {
+    if (!relics.tombFound || !relicSpots.tomb) return false;
+    if (!relics.tombKit) return spendTombMaterials();
+    if (!relics.tombDug) return startTombDig();
+    walker.inTomb = true;
+    walker.x = relicSpots.tomb.x + 3.6;
+    walker.z = relicSpots.tomb.z;
+    walker.y = relicSpots.tomb.floorY;
+    walker.viewYaw = -Math.PI / 2;
+    walker.viewPitch = -0.02;
+    showToast('🕯 你顺着绳梯滑入墓道。石壁潮冷,前方是一间可探索的海蚀古墓');
+    return true;
+  }
+
+  const TOMB_AUTHOR_SKIP_PASSWORD = '🕳️⛏️';
+  function tryTombAuthorSkip() {
+    const pwd = window.prompt('作者盗墓测试密码(表情):');
+    if (pwd === null) return;
+    if (pwd.trim() !== TOMB_AUTHOR_SKIP_PASSWORD) { showToast('盗墓测试密码错误'); return; }
+    if (!walker.on) {
+      showToast('先上岛进入第一人称,再用作者盗墓测试');
+      return;
+    }
+    if (!relics.tombFound || !relicSpots.tomb) {
+      const x = walker.x + Math.sin(walker.viewYaw) * 4.0;
+      const z = walker.z + Math.cos(walker.viewYaw) * 4.0;
+      relics.tombFound = true;
+      createTombEntrance(x, z);
+    }
+    relics.tombKit = true;
+    relics.tombDug = true;
+    relics.tombGuide = false;
+    walker.tombDigT = 0;
+    enterTomb();
+    showToast('🕳️ 作者盗墓测试:材料/工具/盗洞已跳过,直接进入墓室');
+  }
+  function exitTomb() {
+    walker.inTomb = false;
+    walker.x = relicSpots.tomb.x + 1.2;
+    walker.z = relicSpots.tomb.z + 1.2;
+    walker.y = groundHeightAt(walker.x, walker.z);
+    showToast('你攀着绳梯回到地面,海风把墓里的潮气吹散了');
+  }
+  function exitTombWaterLadder() {
+    if (!relicSpots.tomb?.waterLadder) return false;
+    walker.inTomb = false;
+    walker.tombCrawlT = 0;
+    walker.tombCrawlBack = false;
+    walker.x = relicSpots.tomb.x + 1.2;
+    walker.z = relicSpots.tomb.z + 1.2;
+    walker.y = groundHeightAt(walker.x, walker.z);
+    walker.viewYaw = Math.atan2(relicSpots.tomb.x - walker.x, relicSpots.tomb.z - walker.z);
+    walker.viewPitch = -0.03;
+    walker.shakeT = Math.max(walker.shakeT, 0.35);
+    showToast('🪜 你抓住暗河边的湿木梯,一路爬回墓口,终于脱离地下水池');
+    return true;
+  }
+  function tombDeath(reason) {
+    if (walker.godMode) return;
+    relics.tombDeaths++;
+    walker.hp = PLAYER_HP_MAX;
+    walker.stamina = Math.max(60, walker.stamina);
+    walker.poisonT = 0;
+    walker.poisonBlurT = 0;
+    walker.x = relicSpots.tomb.x + 3.6;
+    walker.z = relicSpots.tomb.z;
+    walker.y = relicSpots.tomb.floorY;
+    walker.viewYaw = -Math.PI / 2;
+    walker.viewPitch = -0.02;
+    walker.shakeT = 1.0;
+    showToast('☠ ' + reason + ' —— 第 ' + relics.tombDeaths + ' 次死在墓里,又被绳梯拖回入口');
+  }
+  function updateTombTraps() {
+    if (!walker.inTomb || !relicSpots.tomb) return;
+    for (const hm of relicSpots.tomb.hintMeshes || []) hm.visible = relics.authorMode;
+    if (relics.authorMode) return;
+    for (const tr of relicSpots.tomb.traps) {
+      if (Math.hypot(walker.x - tr.x, walker.z - tr.z) < tr.r) {
+        tombDeath('踩中翻板机关');
+        return;
+      }
+    }
+  }
+  function tryAuthorMode() {
+    const pwd = window.prompt('作者权限密码:');
+    if (pwd === null) return;
+    if (pwd.trim() !== AUTHOR_PASSWORD) { showToast('作者权限密码错误'); return; }
+    relics.authorMode = !relics.authorMode;
+    if (relics.authorMode && walker.inTomb && relicSpots.tomb) {
+      walker.x = relicSpots.tomb.x - 3.4;
+      walker.z = relicSpots.tomb.z - 16.2;
+      walker.y = relicSpots.tomb.floorY;
+      showToast('作者权限开启:红圈显示机关,已跳到主墓室前');
+    } else {
+      showToast(relics.authorMode ? '作者权限开启:进入墓穴可看到机关套路' : '作者权限关闭');
+    }
+  }
+  function nearestTombReward(maxD = 2.0) {
+    if (!relics.tombOpened || !relicSpots.tomb) return null;
+    let best = null, bd = 1e9;
+    for (const rw of relicSpots.tomb.tombRewards || []) {
+      if (rw.taken) continue;
+      const d = Math.hypot(rw.x - walker.x, rw.z - walker.z);
+      if (d < maxD && d < bd) { bd = d; best = rw; }
+    }
+    return best;
+  }
+  function startTombOpen() {
+    if (!relicSpots.tomb || relics.tombOpeningT > 0) return false;
+    if (relics.tombOpened) return false;
+    relics.tombOpeningT = 3.4;
+    walker.x = relicSpots.tomb.x - 2.35;
+    walker.z = relicSpots.tomb.z - 17.3;
+    walker.y = relicSpots.tomb.floorY;
+    walker.viewYaw = Math.atan2((relicSpots.tomb.x - 3.4) - walker.x, (relicSpots.tomb.z - 18.2) - walker.z);
+    walker.viewPitch = -0.28;
+    startHandAction('shake');
+    showToast('🪦 你双手抵住棺材板,小心翼翼地往旁边掀……');
+    return true;
+  }
+  function updateTombOpen(dt) {
+    if (!relicSpots.tomb || relics.tombOpeningT <= 0) return;
+    relics.tombOpeningT = Math.max(0, relics.tombOpeningT - dt);
+    const p = 1 - relics.tombOpeningT / 3.4;
+    const e = p * p * (3 - 2 * p);
+    const lid = relicSpots.tomb.sarcLid;
+    if (lid) {
+      lid.rotation.z = -0.12 - e * 0.9;
+      lid.position.x = -3.4 + e * 1.35;
+      lid.position.y = 0.80 + Math.sin(e * Math.PI) * 0.25;
+    }
+    walker.viewPitch = -0.38 + Math.sin(p * Math.PI) * 0.22;
+    walker.shakeT = Math.max(walker.shakeT, 0.08);
+    if (!hands.action) startHandAction('shake');
+    if (relics.tombOpeningT <= 0) {
+      relics.tombOpened = true;
+      for (const rw of relicSpots.tomb.tombRewards || []) rw.mesh.visible = !rw.taken;
+      showToast('👁 棺盖轰地错开。你探头一看:桃木剑、青铜镜、青铜虎符、阴阳罗盘、红釉小瓶和碎玉鸭都躺在里面,按 E 一件件拿');
+    }
+  }
+  function takeTombReward(rw) {
+    rw.taken = true;
+    rw.mesh.visible = false;
+    startHandAction('pickup');
+    if (rw.kind === 'peachSword') walker.peachSword = true;
+    else if (rw.kind === 'yinyangCompass') {
+      relics.yinyangCompass = true;
+      relics.thirdUnlocked = true;
+      relics.fourthUnlocked = true;
+    }
+    else if (rw.kind === 'redBottle') walker.tombBottle++;
+    else if (rw.kind === 'jadeDuck') walker.tombJade++;
+    else walker.tombBronze++;
+    const left = (relicSpots.tomb.tombRewards || []).filter(o => !o.taken).length;
+    showToast('🏺 收起' + rw.name
+      + (rw.kind === 'yinyangCompass' ? ' · 泰坦现在能循阴阳潮线前往石崖岛和物业/雾叶岛' : '')
+      + (left > 0 ? ' · 棺内还剩 ' + left + ' 件' : ' · 棺内墓藏已取完'));
+    if (left === 0 && !relics.tombLooted) {
+      relics.tombLooted = true;
+      relics.tombWaterOpen = true;
+      walker.godMeat += 1;
+      walker.bombs += 3;
+      showToast('💧 最后一件墓藏离棺,暗格弹开:神肉 ×1、磁吸炸弹 +3。右侧暗孔传来水声,可以钻进去看看');
+    }
+  }
+  function startTombCrawl(back = false) {
+    if (!relics.tombWaterOpen || !relicSpots.tomb || walker.tombCrawlT > 0) return false;
+    walker.tombCrawlBack = back;
+    walker.tombCrawlT = 3.2;
+    walker.x = back ? relicSpots.tomb.water.x : relicSpots.tomb.crawl.x;
+    walker.z = back ? relicSpots.tomb.water.z - 2.2 : relicSpots.tomb.crawl.z;
+    walker.y = relicSpots.tomb.floorY;
+    walker.viewYaw = back ? -Math.PI / 2 : Math.PI / 2;
+    walker.viewPitch = -0.35;
+    startHandAction('pickup');
+    showToast(back ? '🕳 你从地下水池边钻回暗孔,往主墓室爬去……' : '🕳 你伏低身体钻进暗孔,潮气和水声从前方涌来……');
+    return true;
+  }
+  function updateTombCrawl(dt) {
+    if (walker.tombCrawlT <= 0) return;
+    walker.tombCrawlT = Math.max(0, walker.tombCrawlT - dt);
+    if (relicSpots.tomb) {
+      const p = 1 - walker.tombCrawlT / 3.2;
+      const ax = walker.tombCrawlBack ? relicSpots.tomb.water.x : relicSpots.tomb.crawl.x;
+      const az = walker.tombCrawlBack ? relicSpots.tomb.water.z - 2.2 : relicSpots.tomb.crawl.z;
+      const bx = walker.tombCrawlBack ? relicSpots.tomb.crawl.x : relicSpots.tomb.water.x;
+      const bz = walker.tombCrawlBack ? relicSpots.tomb.crawl.z : relicSpots.tomb.water.z - 2.2;
+      walker.x = ax + (bx - ax) * p;
+      walker.z = az + (bz - az) * p;
+      walker.y = relicSpots.tomb.floorY - 0.45 + Math.sin(p * Math.PI) * 0.18;
+      walker.viewYaw = walker.tombCrawlBack ? -Math.PI / 2 : Math.PI / 2;
+      walker.viewPitch = -0.18 + Math.sin(p * Math.PI * 2) * 0.05;
+      if (!hands.action) startHandAction('pickup');
+    }
+    if (walker.tombCrawlT <= 0 && relicSpots.tomb) {
+      if (walker.tombCrawlBack) {
+        walker.x = relicSpots.tomb.crawl.x - 1.4;
+        walker.z = relicSpots.tomb.crawl.z;
+        walker.viewYaw = -Math.PI / 2;
+      } else {
+        walker.x = relicSpots.tomb.water.x;
+        walker.z = relicSpots.tomb.water.z - 2.2;
+        walker.viewYaw = 0;
+      }
+      walker.y = relicSpots.tomb.floorY;
+      walker.viewPitch = -0.08;
+      showToast(walker.tombCrawlBack
+        ? '你从暗孔爬回主墓室旁,沿原路可到绳梯出口'
+        : '💧 你钻出暗道,看见地下水池。水声来自一条被青铜八卦阵锁住的暗河,像通往另一个地方');
+      walker.tombCrawlBack = false;
+    }
+  }
+  const HISTORIAN_LETTER = [
+    '竹简遗书一:「吾乃南溟史官裴玄。王师舟毁于黑潮,余率残民循暗河入此岛,以青铜八卦镇水门。」',
+    '竹简遗书二:「后来者分为二支:石牙主攻,愿以器械夺生路;雾叶主隐,愿以药毒守山林。二者同源,不该永世相杀。」',
+    '竹简遗书三:「若外来人能读到此书,当知野人并非蛮荒之物,乃失国遗民之后。助哪一村,便会改写两岛之后路。」',
+  ];
+  function readHistorianLetter() {
+    const page = Math.min(relics.tombLetterPage, HISTORIAN_LETTER.length - 1);
+    showToast('📜 ' + HISTORIAN_LETTER[page]);
+    if (relics.tombLetterPage < HISTORIAN_LETTER.length) relics.tombLetterPage++;
+    if (relics.tombLetterPage === HISTORIAN_LETTER.length) {
+      showToast('🥚 彩蛋发现:史官遗书揭开石牙与雾叶同源之谜。以后选择阵营时,你知道自己不是在帮陌生人');
+      relics.tombLetterPage++;
+    }
+  }
+  function isMushroomNight() {
+    return timeOfDay >= 20 || timeOfDay < 4;
+  }
+  function nearestCurio(maxD = 3.4) {
+    let best = null;
+    for (const c of curios) {
+      if (c.taken) continue;
+      if ((c.kind === 'mushroom' || c.kind === 'firefly') && !isMushroomNight()) continue;
+      const d = Math.hypot(c.x - walker.x, c.z - walker.z);
+      if (d < maxD && (!best || d < best.d)) best = { ...c, d };
+    }
+    return best;
+  }
+  function useCurio(c) {
+    const src = curios.find(o => o.mesh === c.mesh);
+    if (!src) return false;
+    if (src.kind === 'shell') {
+      if (src.cd > 0) { showToast('贝壳号角里还回荡着刚才的声音'); return true; }
+      src.cd = 35;
+      let scared = 0;
+      for (const sv of savages) {
+        if (sv.dead || sv.elder) continue;
+        if (Math.hypot(sv.x - walker.x, sv.z - walker.z) < 52) {
+          sv.dir = Math.atan2(sv.x - walker.x, sv.z - walker.z);
+          sv.speed = Math.max(sv.speed, 5.2);
+          sv.t = 3.5;
+          sv.state = 'flee';
+          scared++;
+        }
+      }
+      startHandAction('shake');
+      showToast(scared > 0 ? '🐚 你吹响贝壳号角,附近 ' + scared + ' 名普通野人惊慌后退' : '🐚 低沉号角声穿过树林,远处像有东西回应');
+      return true;
+    }
+    if (src.kind === 'drum') {
+      if (src.cd > 0) { showToast('回声鼓还在震动,过一会儿再敲'); return true; }
+      src.cd = 45;
+      const near = gunParts.filter(gp => !gp.taken)
+        .map(gp => ({ gp, d: Math.hypot(gp.x - walker.x, gp.z - walker.z) }))
+        .sort((a, b) => a.d - b.d)[0];
+      startHandAction('fire');
+      if (near) {
+        const dx = near.gp.x - walker.x, dz = near.gp.z - walker.z;
+        const dirs = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+        const dir = dirs[Math.round(((Math.atan2(dx, -dz) * 180 / Math.PI) + 360) % 360 / 45) % 8];
+        showToast('🥁 回声鼓传回空洞回响:最近的' + near.gp.name + '在' + dir + '方约 ' + Math.round(near.d) + ' 米');
+      } else showToast('🥁 鼓声沉进雨林,附近暂时没有可拾取材料');
+      return true;
+    }
+    if (src.kind === 'bottle') {
+      src.taken = true;
+      src.mesh.visible = false;
+      src.respawnT = 240;
+      const roll = Math.random();
+      if (roll < 0.24) {
+        walker.casing += 2;
+        walker.primer += 1;
+        showToast('🍾 漂流瓶里塞着潮湿纸条和几枚旧弹壳 · 铜壳 +2 · 引火帽 +1');
+      } else if (roll < 0.48) {
+        walker.rope += 2;
+        walker.wood += 2;
+        showToast('🍾 漂流瓶被绳结和软木塞缠住 · 绳子 +2 · 木柴 +2');
+      } else if (roll < 0.72) {
+        walker.scrap += 1;
+        walker.gear += 1;
+        showToast('🍾 纸条写着「雾后还有岛」,瓶底藏着废铁 +1 · 机件 +1');
+      } else if (roll < 0.88) {
+        walker.seaGlass++;
+        walker.thirst = Math.min(100, walker.thirst + 12);
+        showToast('🍾 瓶里有一枚被海水磨圆的蓝海玻璃 · 海玻璃 +1 · 口渴 +12');
+      } else {
+        walker.driftToken++;
+        walker.powder += 1;
+        showToast('🍾 捡到一枚刻着浪纹的漂流铜片 · 漂流铜片 +1 · 火药 +1');
+      }
+      startHandAction('pickup');
+      return true;
+    }
+    if (src.kind === 'firefly') {
+      if (src.cd > 0) { showToast('萤火虫还绕着玻璃瓶打转,等它们重新聚亮'); return true; }
+      src.cd = 50;
+      walker.stamina = Math.min(100, walker.stamina + 45);
+      walker.thirst = Math.min(100, walker.thirst + 6);
+      startHandAction('shake');
+      showToast('✨ 你摇亮萤火虫灯笼,雨林小径短暂清晰 · 体力 +45 · 口渴 +6');
+      return true;
+    }
+    if (src.kind === 'tidepool') {
+      if (src.cd > 0) { showToast('潮池刚被翻过,等下一轮浪把贝类带回来'); return true; }
+      src.cd = 70;
+      const roll = Math.random();
+      startHandAction('pickup');
+      if (roll < 0.42) {
+        walker.meat += 1;
+        walker.thirst = Math.min(100, walker.thirst + 10);
+        showToast('🦪 你在潮池里摸到贝肉和淡淡积水 · 肉 +1 · 口渴 +10');
+      } else if (roll < 0.68) {
+        walker.seaPearl++;
+        walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 18);
+        showToast('🦪 贝壳里藏着一颗小海珠 · 海珠 +1 · 体力 +18');
+      } else if (roll < 0.86) {
+        walker.seaGlass++;
+        walker.primer += 1;
+        showToast('🌊 潮池底闪着一片绿海玻璃 · 海玻璃 +1 · 引火帽 +1');
+      } else {
+        walker.shellCharm++;
+        walker.hp = Math.min(PLAYER_HP_MAX, walker.hp + 16);
+        showToast('🐚 你找到一个天然孔洞贝壳护符 · 贝壳护符 +1 · 生命 +16');
+      }
+      return true;
+    }
+    if (src.kind === 'triClam') {
+      if (src.cd > 0) { showToast('三角蚌刚合上壳,等潮水再拍一阵'); return true; }
+      src.cd = 110;
+      const roll = Math.random();
+      startHandAction('pickup');
+      walker.shakeT = Math.max(walker.shakeT, 0.18);
+      if (roll < 0.52) {
+        walker.seaPearl++;
+        walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 20);
+        showToast('🦪 你小心掰开三角蚌,摸出一颗温润珍珠 · 珍珠 +1 · 体力 +20');
+      } else if (roll < 0.82) {
+        walker.seaPearl += 2;
+        walker.thirst = Math.min(100, walker.thirst + 12);
+        showToast('🦪 蚌肉下藏着两颗小珍珠 · 珍珠 +2 · 口渴 +12');
+      } else {
+        walker.oceanTear++;
+        walker.hp = Math.min(PLAYER_HP_MAX, walker.hp + 30);
+        walker.thirst = Math.min(100, walker.thirst + 18);
+        showToast('💧 三角蚌壳心凝着一滴蓝光,像海洋之泪 · 海洋之泪 +1 · 生命 +30 · 口渴 +18');
+      }
+      return true;
+    }
+    if (src.kind === 'fishVane') {
+      if (src.cd > 0) { showToast('鱼骨风向标还在吱呀转动'); return true; }
+      src.cd = 55;
+      const wind = seaStateEff > 0.72 ? '浪高风急,别离岸太远' : seaStateEff > 0.42 ? '海风正好,适合钓鱼和近岸采集' : '海面太平,鱼汛会慢一些';
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 18);
+      startHandAction('shake');
+      showToast('🐟 鱼骨风向标指向潮口:' + wind + ' · 体力 +18');
+      return true;
+    }
+    if (src.kind === 'cairn') {
+      if (src.cd > 0) { showToast('求生石堆已经被你重新摆正,过会儿再看'); return true; }
+      src.cd = 80;
+      const roll = Math.random();
+      if (roll < 0.45) {
+        walker.wood += 2;
+        walker.rope += 1;
+      } else if (roll < 0.75) {
+        walker.shellCharm++;
+        walker.rope += 1;
+      } else {
+        walker.driftToken++;
+        walker.casing += 1;
+      }
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 25);
+      startHandAction('shake');
+      showToast('🪨 你按旧标记重摆求生石堆 · 体力 +25'
+        + (roll < 0.45 ? ' · 木柴 +2 · 绳子 +1'
+          : roll < 0.75 ? ' · 贝壳护符 +1 · 绳子 +1'
+            : ' · 漂流铜片 +1 · 铜壳 +1'));
+      return true;
+    }
+    if (src.kind === 'signalFire') {
+      if (src.cd > 0) { showToast('信号火堆的烟还没散,暂时不用再点'); return true; }
+      if (walker.wood < 2) { showToast('点信号火堆需要木柴 2'); return true; }
+      walker.wood -= 2;
+      src.cd = 95;
+      let scared = 0;
+      for (const sv of savages) {
+        if (sv.dead || sv.elder) continue;
+        const d = Math.hypot(sv.x - walker.x, sv.z - walker.z);
+        if (d < 70) {
+          sv.state = 'flee';
+          sv.t = 5.5;
+          sv.speed = Math.max(sv.speed, 5.6);
+          sv.dir = Math.atan2(sv.x - walker.x, sv.z - walker.z);
+          scared++;
+        }
+      }
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 20);
+      walker.shakeT = Math.max(walker.shakeT, 0.25);
+      startHandAction('fire');
+      showToast('🔥 你点燃信号火堆,浓烟直上椰林 · 木柴 -2 · 体力 +20'
+        + (scared ? ' · 吓退 ' + scared + ' 名普通野人' : ' · 远处海鸟被惊起'));
+      return true;
+    }
+    if (src.kind === 'vineSwing') {
+      if (src.cd > 0) { showToast('藤蔓还在晃,等它停下来再荡'); return true; }
+      src.cd = 36;
+      const fx = Math.sin(walker.viewYaw), fz = Math.cos(walker.viewYaw);
+      const nx = walker.x + fx * 6.2, nz = walker.z + fz * 6.2;
+      if (groundHeightAt(nx, nz) > -1.1) {
+        walker.x = nx;
+        walker.z = nz;
+        walker.y = groundHeightAt(walker.x, walker.z);
+      }
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 32);
+      walker.shakeT = Math.max(walker.shakeT, 0.55);
+      startHandAction('shake');
+      showToast('🌿 你抓住藤蔓荡过一段林间空地 · 体力 +32 · 向前跃出一截');
+      return true;
+    }
+    if (src.kind === 'coconutTarget') {
+      if (src.cd > 0) { showToast('椰壳靶架还在摇,下一轮再投 · ' + Math.ceil(src.cd) + 's'); return true; }
+      if (src.challengeT > 0) {
+        const d = Math.hypot(walker.x - src.x, walker.z - src.z);
+        showToast('🥥 限时挑战进行中:' + Math.ceil(src.challengeT) + 's · 有效射击距离 8-28 米 · 当前 ' + Math.round(d) + ' 米');
+        return true;
+      }
+      src.challengeT = 12;
+      src.hitT = 0.45;
+      startHandAction('shake');
+      walker.shakeT = Math.max(walker.shakeT, 0.16);
+      showToast('🥥 椰壳靶架挑战开始:12 秒内站到 8-28 米外,用弓箭射中才计分给奖励');
+      return true;
+    }
+    if (src.kind === 'tide') {
+      if (src.cd > 0) { showToast('潮汐石纹路还没退潮,稍后再读'); return true; }
+      src.cd = 65;
+      const targets = [
+        { name: '第二岛雨林', icon: '②', x: NEW_ISLAND.x, z: NEW_ISLAND.z },
+        { name: '石崖岛', icon: '③', x: THIRD_ISLAND.x, z: THIRD_ISLAND.z },
+        { name: '物业/雾叶岛', icon: '④', x: FOURTH_ISLAND.x, z: FOURTH_ISLAND.z },
+      ];
+      const dirs = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+      const lines = targets.map(tg => {
+        const dx = tg.x - walker.x, dz = tg.z - walker.z;
+        const dir = dirs[Math.round(((Math.atan2(dx, -dz) * 180 / Math.PI) + 360) % 360 / 45) % 8];
+        return { ...tg, d: Math.hypot(dx, dz), dir };
+      });
+      tideNav.targets = lines;
+      tideNav.until = simTime + 90;
+      eggNavTarget = [...lines].sort((a, b) => a.d - b.d)[0];
+      startHandAction('shake');
+      showToast('🪨 潮汐月相图亮起:'
+        + lines.map(tg => tg.icon + tg.name + tg.dir + '方' + Math.round(tg.d) + 'm').join(' · ')
+        + ' · 三岛标记显示 90 秒');
+      return true;
+    }
+    if (src.kind === 'sunPyramid') {
+      if (src.cd > 0) { showToast('日影金字塔的光路还在复位'); return true; }
+      src.cd = 80;
+      walker.stone += 12;
+      walker.shakeT = Math.max(walker.shakeT, 0.35);
+      startHandAction('shake');
+      showToast('🔺 日影金字塔把影子投到断崖刻度上:古人用午时影长测海路 · 石块 +12 · 石崖岛裂湾方向已记下');
+      return true;
+    }
+    if (src.kind === 'stoneAbacus') {
+      if (src.cd > 0) { showToast('石算盘珠还停在上一卦,稍后再拨'); return true; }
+      src.cd = 75;
+      const woodSpend = Math.min(walker.wood, 18);
+      const stoneSpend = Math.min(walker.stone, 18);
+      walker.wood -= woodSpend;
+      walker.stone -= stoneSpend;
+      walker.timber += Math.floor(woodSpend / 3);
+      walker.catapultAmmo += Math.floor(stoneSpend / 6);
+      startHandAction('shake');
+      showToast('🧮 你拨动古人石算盘:木柴 ' + woodSpend + ' 折成木料 +' + Math.floor(woodSpend / 3)
+        + ' · 石块 ' + stoneSpend + ' 刻成巨石弹 +' + Math.floor(stoneSpend / 6));
+      return true;
+    }
+    if (src.kind === 'mirrorPyramid') {
+      if (src.cd > 0) { showToast('水镜金字塔的倒影还没平静'); return true; }
+      src.cd = 80;
+      walker.thirst = Math.min(100, walker.thirst + 35);
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + 35);
+      tideNav.targets = [
+        { name: '石崖岛', icon: '③', x: THIRD_ISLAND.x, z: THIRD_ISLAND.z, d: Math.hypot(THIRD_ISLAND.x - walker.x, THIRD_ISLAND.z - walker.z), dir: '回望' },
+        { name: '物业/雾叶岛', icon: '④', x: FOURTH_ISLAND.x, z: FOURTH_ISLAND.z, d: Math.hypot(FOURTH_ISLAND.x - walker.x, FOURTH_ISLAND.z - walker.z), dir: '本岛' },
+      ];
+      tideNav.until = simTime + 60;
+      startHandAction('shake');
+      showToast('💧 水镜金字塔映出两座远岛的潮线 · 口渴 +35 · 体力 +35 · 远岛标记显示 60 秒');
+      return true;
+    }
+    if (src.kind === 'starDial') {
+      if (src.cd > 0) { showToast('星象石盘的铜星还在缓慢转动'); return true; }
+      src.cd = 90;
+      const night = isMushroomNight();
+      walker.primer += night ? 3 : 1;
+      walker.powder += night ? 3 : 1;
+      if (night) walker.venom += walker.savage ? 1 : 0;
+      startHandAction('shake');
+      showToast('✦ 星象石盘排出潮汐星图:' + (night ? '夜里星位最清楚 · ' : '白天只能读到残影 · ')
+        + '引火帽 +' + (night ? 3 : 1) + ' · 火药 +' + (night ? 3 : 1)
+        + (night && walker.savage ? ' · 毒液 +1' : ''));
+      return true;
+    }
+    if (src.kind === 'mushroom') {
+      src.taken = true;
+      src.mesh.visible = false;
+      src.respawnT = 180;
+      walker.hp = Math.min(PLAYER_HP_MAX, walker.hp + 18);
+      walker.thirst = Math.min(100, walker.thirst + 8);
+      startHandAction('eat');
+      if (Math.random() < 0.22) {
+        applyPoison(3, 0, '误食毒蘑菇身亡');
+        showToast('🍄 夜光蘑菇让伤口发热愈合,但带着一点毒性 · 生命 +18');
+      } else showToast('🍄 夜光蘑菇清凉发甜 · 生命 +18 口渴 +8');
+      return true;
+    }
+    return false;
+  }
+  function materialLine() {
+    return '库存:木柴 ' + walker.wood + ' / 废铁 ' + walker.scrap
+      + ' / 机件 ' + walker.gear + ' / 火药 ' + walker.powder
+      + ' / 铅 ' + walker.lead + ' / 铜壳 ' + walker.casing + ' / 引火帽 ' + walker.primer;
+  }
+  function spendGunMaterials(cost) {
+    if (walker.wood < (cost.wood || 0) || walker.scrap < (cost.scrap || 0) || walker.gear < (cost.gear || 0)
+        || walker.powder < (cost.powder || 0) || walker.lead < (cost.lead || 0)
+        || walker.casing < (cost.casing || 0) || walker.primer < (cost.primer || 0)) {
+      showToast('材料不足 —— ' + materialLine());
+      return false;
+    }
+    walker.wood -= cost.wood || 0;
+    walker.scrap -= cost.scrap || 0;
+    walker.gear -= cost.gear || 0;
+    walker.powder -= cost.powder || 0;
+    walker.lead -= cost.lead || 0;
+    walker.casing -= cost.casing || 0;
+    walker.primer -= cost.primer || 0;
+    return true;
+  }
+  function craftFirearm() {
+    const choice = window.prompt(
+      '工作台:输入数字制作枪械/弹药\n'
+      + '1 步枪:木柴3 废铁3 机件1 火药2 → 步枪弹+24\n'
+      + '2 狙击枪:木柴4 废铁5 机件3 火药4 → 狙击弹+8\n'
+      + '3 冲锋枪:木柴5 废铁6 机件4 火药5 → 冲锋弹+90\n'
+      + '4 步枪弹:铅2 铜壳2 火药1 引火帽1 → +18\n'
+      + '5 狙击弹:铅3 铜壳2 火药2 引火帽2 → +6\n'
+      + '6 冲锋弹:铅4 铜壳5 火药2 引火帽2 → +60\n\n'
+      + materialLine(), '1');
+    if (choice === null) return;
+    const c = choice.trim();
+    if (c === '1') {
+      if (!spendGunMaterials({ wood: 3, scrap: 3, gear: 1, powder: 2 })) return;
+      walker.rifle = true;
+      walker.weapon = 'rifle';
+      walker.bullets += 24;
+      $('ih-weapon-item').style.display = 'flex';
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('🔫 工作台造出一支简易步枪 · 步枪弹 +24(按 2 切换)');
+      return;
+    }
+    if (c === '2') {
+      if (!spendGunMaterials({ wood: 4, scrap: 5, gear: 3, powder: 4 })) return;
+      walker.sniper = true;
+      walker.weapon = 'sniper';
+      walker.sniperAmmo += 8;
+      $('ih-weapon-item').style.display = 'flex';
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('🎯 工作台调出一支长管狙击枪 · 狙击弹 +8(按 4 开镜)');
+      return;
+    }
+    if (c === '3') {
+      if (!spendGunMaterials({ wood: 5, scrap: 6, gear: 4, powder: 5 })) return;
+      walker.smg = true;
+      walker.weapon = 'smg';
+      walker.smgAmmo += 90;
+      $('ih-weapon-item').style.display = 'flex';
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('🔫 工作台拼出一支冲锋枪 · 冲锋弹 +90(按住空格连发)');
+      return;
+    }
+    if (c === '4') {
+      if (!spendGunMaterials({ lead: 2, casing: 2, powder: 1, primer: 1 })) return;
+      walker.bullets += 18;
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('📦 压装步枪弹 +18 · 必要原料:铅块/铜壳/火药/引火帽');
+      return;
+    }
+    if (c === '5') {
+      if (!spendGunMaterials({ lead: 3, casing: 2, powder: 2, primer: 2 })) return;
+      walker.sniperAmmo += 6;
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('🎯 手工装配狙击弹 +6 · 弹头要铅,底火要引火帽');
+      return;
+    }
+    if (c === '6') {
+      if (!spendGunMaterials({ lead: 4, casing: 5, powder: 2, primer: 2 })) return;
+      walker.smgAmmo += 60;
+      $('ih-bullets-item').style.display = 'flex';
+      startHandAction('pickup');
+      showToast('📦 压装冲锋枪弹 +60 · 多收集铜壳和铅块才能持续扫射');
+      return;
+    }
+    showToast('工作台没有这个配方');
+  }
+
   function islandHint() {
+    if (walker.inTomb) {
+      if (walker.tombCrawlT > 0) return '正在伏身钻过暗孔…… ' + Math.ceil(walker.tombCrawlT) + 's';
+      if (relics.tombOpeningT > 0) return '正在掀开棺材板…… ' + Math.ceil(relics.tombOpeningT) + 's';
+      if (relicSpots.tomb && Math.hypot((relicSpots.tomb.x + 5.3) - walker.x, relicSpots.tomb.z - walker.z) < 1.8) return '按 E 顺绳梯返回地面';
+      const trw = nearestTombReward();
+      if (trw) return '按 E 小心取出' + trw.name;
+      if (relicSpots.tomb?.waterLadder && Math.hypot(relicSpots.tomb.waterLadder.x - walker.x, relicSpots.tomb.waterLadder.z - walker.z) < 2.4)
+        return '按 E 爬湿木梯直接回到墓口';
+      if (relics.tombWaterOpen && relicSpots.tomb && Math.hypot(relicSpots.tomb.crawl.x - walker.x, relicSpots.tomb.crawl.z - walker.z) < 2.4)
+        return '按 E 伏身钻进右侧暗孔,去看水声从哪里来';
+      if (relics.tombWaterOpen && relicSpots.tomb?.water && Math.hypot(relicSpots.tomb.water.x - walker.x, (relicSpots.tomb.water.z - 2.2) - walker.z) < 2.8)
+        return '按 E 钻回主墓室暗孔,再沿绳梯返回地面';
+      if (relicSpots.tomb?.historian && Math.hypot(relicSpots.tomb.historian.x - walker.x, relicSpots.tomb.historian.z - walker.z) < 2.5)
+        return relics.tombLetterPage > HISTORIAN_LETTER.length ? '史官遗书已读完 · 石牙与雾叶原来同源' : '按 E 阅读暗河边的史官竹简遗书';
+      if (relicSpots.tomb && Math.hypot((relicSpots.tomb.x - 3.4) - walker.x, (relicSpots.tomb.z - 18.2) - walker.z) < 2.4)
+        return relics.tombOpened
+          ? (relics.tombLooted ? '空石棺:潮湿青砖上只剩刮痕' : '棺材板已掀开,靠近里面的墓藏按 E 一件件拿')
+          : '按 E 慢慢掀开棺材板,先探头看看里面有什么';
+      if (relicSpots.tomb && relicSpots.tomb.water && Math.hypot(relicSpots.tomb.water.x - walker.x, relicSpots.tomb.water.z - walker.z) < 5.5)
+        return '地下水池 · 青铜八卦阵镇着暗河,水声像从更深处传来';
+      return relics.authorMode
+        ? '作者权限:红圈是机关,可直接看套路;石棺在深处左侧'
+        : '海蚀古墓 · 青铜器、八卦阵和符号都可能暗示机关走法';
+    }
     if (walker.inBunker) {
       if (Math.hypot(bunkerSpots.ladder.x - walker.x, bunkerSpots.ladder.z - walker.z) < 1.8) return '按 E 攀梯返回地面';
       if (Math.hypot(bunkerSpots.rack.x - walker.x, bunkerSpots.rack.z - walker.z) < 2.4) {
@@ -4893,9 +8706,9 @@ async function boot() {
       if (wildNear && !titanBattle.on)
         return '按 E 指挥你的泰坦迎战' + wildNear.sp.name + '(打斗中驯服它更易)';
       if (deadNear)
-        return '按 E 让你的泰坦吞噬' + deadNear.sp.name + '的躯体 · 已吞噬 ' + (nearTamed.devours || 0) + '/4'
-          + (nearTamed.ultimate ? ' · 终极形态!' : ',吞满 4 只进化为终极虚空泰坦');
-      return '按 V 骑乘' + nearTamed.sp.name + (nearTamed.ultimate ? ' · 终极形态,全速横渡新海域' : nearTamed.fused ? ' · 已融合,可横渡深海前往西南新海域' : ' · 碾过岛屿可尽收全岛木石')
+        return '按 E 让你的泰坦吞噬' + deadNear.sp.name + '的躯体 · 不同泰坦 ' + devouredUniqueCount(nearTamed) + '/4'
+          + (nearTamed.ultimate ? ' · 终极形态!' : ',吞满 4 种进化为终极形态');
+      return '按 V 骑乘' + nearTamed.sp.name + (canTitanReachSecond(nearTamed) ? ' · 可横渡深海前往第二岛' : ' · 泰坦不足 3 只/吞噬不足 3 只,暂不能去第二岛')
         + '(已驯服 ' + titansTamed + '/' + TITAN_MAX + ')';
     }
     const nearRage = titans.find(g => g.state === 'rage'
@@ -4907,20 +8720,101 @@ async function boot() {
     const nearDeadTitan = titans.find(g => g.state === 'dead' && g.harvests > 0
       && Math.hypot(g.x - walker.x, g.z - walker.z) < 50);
     if (nearDeadTitan && !myTamedTitan()) return '按 E 割取虚空泰坦的神肉';
+    const wb = nearestWorkbench();
+    if (wb) return wb.label + ':按 E 制作枪械/弹药 · 弹药需铅块+铜壳+火药+引火帽 · ' + materialLine();
+    const gp = nearestGunPart();
+    if (gp) return '按 E 拾取' + gp.name + '(枪械制作材料)';
+    const tm = nearestTombMaterial();
+    if (tm) return '按 E 拾取' + tm.name + '(盗墓装备材料) · ' + tombMaterialLine();
+    const curio = nearestCurio();
+    if (curio) return curio.kind === 'shell'
+      ? '按 E 吹响贝壳号角(吓退附近普通野人)'
+      : curio.kind === 'drum'
+        ? '按 E 敲回声鼓(听附近材料的大致方向)'
+        : curio.kind === 'bottle'
+          ? '按 E 打开漂流瓶(材料或线索)'
+          : curio.kind === 'firefly'
+            ? '按 E 摇亮萤火虫灯笼(夜里恢复体力)'
+            : curio.kind === 'tide'
+              ? '按 E 读取潮汐月相图(标出第二/三/四岛)'
+              : curio.kind === 'tidepool'
+                ? '按 E 翻潮池摸贝肉(补食物和口渴)'
+                : curio.kind === 'triClam'
+                  ? '按 E 摸三角蚌(可能出珍珠或海洋之泪)'
+                  : curio.kind === 'fishVane'
+                    ? '按 E 看鱼骨风向标(判断风浪和鱼汛)'
+                    : curio.kind === 'cairn'
+                      ? '按 E 重摆求生石堆(取备用绳结)'
+                      : curio.kind === 'signalFire'
+                        ? '按 E 点燃信号火堆(木柴 -2,吓退附近野人)'
+                        : curio.kind === 'vineSwing'
+                          ? '按 E 抓藤蔓秋千向前荡出一截'
+                          : curio.kind === 'coconutTarget'
+                          ? '椰壳靶架:按 E 开 12s 挑战,8-28 米外弓箭命中才加分'
+                            : curio.kind === 'sunPyramid'
+                              ? '按 E 读取日影金字塔(古人用影长测海路)'
+                              : curio.kind === 'stoneAbacus'
+                                ? '按 E 拨动石算盘遗迹(木石折算成远征物资)'
+                                : curio.kind === 'mirrorPyramid'
+                                  ? '按 E 触碰水镜金字塔(恢复并显示远岛潮线)'
+                                  : curio.kind === 'starDial'
+                                    ? '按 E 转动星象石盘(夜里收益更高)'
+                                    : '按 E 采食夜光蘑菇(回血,但可能带毒)';
+    const bs = nearestBuildSite();
+    if (bs) {
+      if (bs.stage > 0) return bs.label + ':' + houseLevelName(bs.stage) + ' · 按 E 休整 · ' + houseEffectText(bs.stage)
+        + (bs.stage >= HOUSE_COSTS.length ? '' : ' · 按 X 继续升级');
+      const need = buildSiteNeed(bs);
+      return bs.label + ':' + (bs.paid
+        ? '按 X 继续斧子施工(' + bs.hits + '/' + need.hits + ')'
+        : '需要木材 ' + need.timber + ' + 绳子 ' + need.rope + ',备齐后按 X ' + (bs.stage === 0 ? '建房' : '升级'));
+    }
+    for (const rp of ropes) {
+      if (!rp.taken && Math.hypot(rp.x - walker.x, rp.z - walker.z) < 3) return '按 E 拾取绳子(建房/升级材料)';
+    }
     if (newIslandHeightAt(walker.x, walker.z) > 0.5) {
+      if (walker.swordTurret) return '长剑炮台:' + (aim.on ? '7×镜' : '腰射') + ' · 4 切换瞄具 · 空格连射 · E 离开 · 箭矢 ' + swordTurret.ammo + '/1000';
+      if (swordTurret && Math.hypot(swordTurret.x - walker.x, swordTurret.z - walker.z) < 18)
+        return '按 E 操控高架长剑炮台(俯瞰野人村落 · 腰射/7×镜可切换)';
+      if (relicSpots.greatWall && Math.hypot(relicSpots.greatWall.x - walker.x, relicSpots.greatWall.z - walker.z) < 28)
+        return '废弃长城制高点:靠近柱基按 E 进入高架炮位,俯瞰雨林与野人村落';
+      if (newIsland.landedT < 20 && !walker.savage && !relics.tribeAlly)
+        return '野人还在雨林里按路线巡逻(' + Math.ceil(20 - newIsland.landedT) + 's 后才会攻击)';
+      if (walker.carryingCatapult) return '按 E 放下投石机 · 搬运时默认走路' + (walker.buff ? '(神力可疾跑)' : '(吃神肉可疾跑)');
+      const nearCatapult = nearestPlacedCatapult(5.0);
+      if (nearCatapult) return '固定投石机:空格发射巨石弹(剩 ' + walker.catapultAmmo + ' 发) · E 搬运';
+      if (walker.catapult && placedCatapults.length === 0) return '按 E 把投石机架在地上 · 固定炮台才能发射';
       if (Math.hypot(relicSpots.altar.x - walker.x, relicSpots.altar.z - walker.z) < 4.5) return '按 E 祭拜古老祭坛(野人好感 · 生命+20)';
+      if (relicSpots.stoneAltar && Math.hypot(relicSpots.stoneAltar.x - walker.x, relicSpots.stoneAltar.z - walker.z) < 4.5)
+        return '石牙信任祭坛:按 E 治疗并累计信任(' + relics.stoneMercy + '/5)';
+      if (relicSpots.mistAltar && Math.hypot(relicSpots.mistAltar.x - walker.x, relicSpots.mistAltar.z - walker.z) < 4.5)
+        return '雾叶信任祭坛:按 E 治疗并累计信任(' + relics.mistMercy + '/5)';
       if (Math.hypot(relicSpots.totem.x - walker.x, relicSpots.totem.z - walker.z) < 3.5) return '按 E 端详图腾柱(刻着先民的歌谣)';
       if (Math.hypot(relicSpots.chest.x - walker.x, relicSpots.chest.z - walker.z) < 3.0) return relics.chestOpen ? '宝箱已空' : '按 E 撬鎏金宝箱的密码锁';
       if (Math.hypot(relicSpots.memorial.x - walker.x, relicSpots.memorial.z - walker.z) < 3.5) return relics.memorialOpen ? '墓碑的暗格已空' : relics.memorialRead ? '按 E 开启墓碑暗格(墓志铭里有答案)' : '按 E 瞻仰红五星墓碑';
-      if (Math.hypot(relicSpots.village.x - walker.x, relicSpots.village.z - walker.z) < 11) return '野人村落:茅屋成圈、图腾守望 —— 这里是它们的老巢,小心!';
+      if (Math.hypot(relicSpots.village.x - walker.x, relicSpots.village.z - walker.z) < 15) return walker.savage
+          ? (relics.tribeAlly === 'stone' ? '石牙村盟友:剑士/长矛/盾兵/炼毒师分工 · 石牙远岛已解锁' : '按 E 帮助石牙村(强攻派)· 获得固定投石机与第三岛结局')
+        : '石牙村只有野人能进 —— 村里已有剑士、长矛战士、盾兵和炼毒师';
+      if (relicSpots.village2 && Math.hypot(relicSpots.village2.x - walker.x, relicSpots.village2.z - walker.z) < 15) return walker.savage
+          ? (relics.tribeAlly === 'mist' ? '雾叶村盟友:剑士/长矛/盾兵/炼毒师分工 · 雾叶远岛已解锁' : '按 E 帮助雾叶村(避战派)· 获得解毒药与第四岛结局')
+        : '雾叶村只有野人能进 —— 村里已有剑士、长矛战士、盾兵和炼毒师';
       if (relicSpots.stream && Math.hypot(relicSpots.stream.x - walker.x, relicSpots.stream.z - walker.z) < 4) return '一条清澈的小溪,从岛心蜿蜒入海';
+      if (relics.tombFound && relicSpots.tomb && Math.hypot(relicSpots.tomb.x - walker.x, relicSpots.tomb.z - walker.z) < 3.4)
+        return walker.tombDigT > 0 ? '正在用洛阳铲打盗洞…… ' + Math.ceil(walker.tombDigT) + 's'
+          : relics.tombKit && relics.tombDug ? '按 E 顺绳梯下墓 · 小心墓道机关'
+            : relics.tombKit ? '按 E 用洛阳铲刨土打盗洞'
+              : '古墓盗洞:缺材料会自动拉导航线 · 按 E 制作装备 · ' + tombMaterialLine();
       if (Math.hypot(relicSpots.wreck.x - walker.x, relicSpots.wreck.z - walker.z) < 5.0) return '一艘古代沉船的残骸…… 船头插着根断桅';
       if (Math.hypot(relicSpots.camp.x - walker.x, relicSpots.camp.z - walker.z) < 6.0) return '野人营地:三座茅草屋围着熄灭的篝火';
       const sv = savages.find(s => !s.dead && Math.hypot(s.x - walker.x, s.z - walker.z) < 60);
-      if (sv) return '野人出没!' + (walker.bombs > 0
-        ? (walker.bombCd > 0 ? '磁吸炸弹冷却 ' + Math.ceil(walker.bombCd) + 's' : '按 G 投掷磁吸炸弹(剩 ' + walker.bombs + ' 枚)')
-        : '磁吸炸弹用完了 · 用枪') + ' · 空格射击';
-      return '新荒岛 · 野人的地盘(G 磁吸炸弹,剩 ' + walker.bombs + ' 枚)· 岛上有前人留下的遗迹';
+      if (sv) return '野人出没!'
+        + (walker.bombAdmin ? '按 U 管理员磁吸炸弹'
+          : walker.bombs > 0 ? '按 U 投掷磁吸炸弹(库存 ' + walker.bombs + ')'
+            : '磁吸炸弹充能 ' + Math.ceil(walker.bombCd) + 's')
+        + ' · 空格射击';
+      return relics.war.mode !== 'none'
+        ? (relics.war.mode === 'assault' ? '野人总攻中!用枪械/投石机/泰坦抵御 · 泰坦受伤后靠吞噬恢复' : '野人游击战中!袭扰频繁,别恋战')
+        : '新荒岛 · 外来者会让两村暂时联合 · 去阵营祭坛治疗 5 次可获信任';
     }
     if (fishing.active) return fishing.phase === 'bite' ? '❗ 按空格收杆!' : '浮漂静立…… H 收杆';
     for (const pot of crabPots) {
@@ -4932,15 +8826,17 @@ async function boot() {
       if (shelter.diaryPage < SHELTER_DIARY.length) return '按 E 翻看老兵留下的日记';
     } else if (!shelter.searched && sd < 14) return '林间好像有什么人造的东西…… 走近看看';
     const tr = nearestTree();
-    if (tr) return '按 X 砍' + tr.kind + '(木柴 +' + tr.data.wood + ')· E 仍优先互动';
+    if (tr) return '按 X 砍' + tr.kind + '(木柴 +' + tr.data.wood + ' · 木材 +' + (tr.data.wood * 4) + ')· E 仍优先互动';
     if (animals.some(an => an.kind === 'crab' && !an.dead
         && Math.hypot(an.x - walker.x, an.z - walker.z) < 1.8)) return '按 X 劈蟹(蟹肉 +1)';
     if (animals.some(an => an.kind === 'egret' && an.state === 'dead' && !an.harvested
         && Math.hypot(an.x - walker.x, an.z - walker.z) < 2.5)) return '按 E 捡拾白鹭(肉 +1)';
     const ns = nearestStone();
-    if (ns) return '按 X 劈开石头(石块 +2)· 按 E 直接拾取(+1)';
-    if (rockData.some(r => r.cd <= 0 && Math.hypot(r.x - walker.x, r.z - walker.z) < 2.8)) {
-      return '按 X 凿礁石(石块 +1)';
+    if (ns) return '按 X 劈开石头(石块 +6)· 按 E 直接拾取(+3)';
+      if (rockData.some(r => Math.hypot(r.x - walker.x, r.z - walker.z) < 3.2)) {
+      return walker.catapult
+        ? '海边大礁石:按 N 切割投石机巨石弹(2 分钟,需 10 椰子或 1 神肉)'
+        : '按 X 凿礁石(石块 +4)';
     }
     if (islandHeightAt(walker.x + Math.sin(walker.viewYaw) * 1.5,
         walker.z + Math.cos(walker.viewYaw) * 1.5) < 0.3 && walker.thirst < 95) {
@@ -4965,14 +8861,70 @@ async function boot() {
       if (!dw.taken && Math.hypot(dw.x - walker.x, dw.z - walker.z) < 3) return '按 E 拾取木柴';
     }
     for (const st of stones) {
-      if (!st.taken && Math.hypot(st.x - walker.x, st.z - walker.z) < 2.5) return '按 E 拾取石块';
+      if (!st.taken && Math.hypot(st.x - walker.x, st.z - walker.z) < 2.5) return '按 E 拾取石块(+3)';
     }
-    return '空格 ' + (walker.weapon === 'rifle' ? '射击' : '射箭')
-      + (walker.rifle ? ' · 2 切换武器' : '')
+    const nearCatapultOld = walker.catapult && nearestPlacedCatapult(5.0);
+    if (walker.savage && (walker.venom > 0 || walker.poisonSpear > 0)) {
+      return '毒液 ' + walker.venom + ' · 毒矛 ' + walker.poisonSpear + ' · Q 涂毒 · 空格投矛';
+    }
+    return '空格 ' + (nearCatapultOld ? '投石机'
+      : walker.weapon === 'spear' ? '投矛'
+        : walker.weapon === 'rifle' || walker.weapon === 'sniper' || walker.weapon === 'smg' ? '射击' : '射箭')
+      + (walker.rifle || walker.sniper || walker.smg || walker.spear ? ' · 2 切换武器' : '')
       + ' · X 砍柴/劈石 · C 蟹笼 · H 钓鱼 · Y 喝水 · F 陷阱 · Q 打磨箭 · T 吃肉 · R 神肉 · 0 神秘密码';
   }
 
   function islandInteract() {
+    if (walker.swordTurret) {
+      walker.swordTurret = null;
+      setAim(false);
+      showToast('离开长剑炮台');
+      return;
+    }
+    if (swordTurret && Math.hypot(swordTurret.x - walker.x, swordTurret.z - walker.z) < 18) {
+      walker.swordTurret = swordTurret;
+      walker.x = swordTurret.x;
+      walker.z = swordTurret.z;
+      walker.y = swordTurret.y + SWORD_TURRET_EYE_LIFT - 1.62;
+      walker.viewYaw = swordTurret.dir;
+      walker.viewPitch = -0.32;
+      setAim(false);
+      showToast('⚔ 高架长剑炮台就位:腰射模式 · 俯瞰下方野人 · 按 4 切换 7×镜 · 空格发射 · E 离开');
+      return;
+    }
+    if (walker.inTomb) {
+      if (walker.tombCrawlT > 0) { showToast('正在钻过暗孔……'); return; }
+      if (relics.tombOpeningT > 0) { showToast('正在掀棺材板……'); return; }
+      if (relicSpots.tomb && Math.hypot((relicSpots.tomb.x + 5.3) - walker.x, relicSpots.tomb.z - walker.z) < 1.8) {
+        exitTomb();
+        return;
+      }
+      const trw = nearestTombReward();
+      if (trw) { takeTombReward(trw); return; }
+      if (relicSpots.tomb?.waterLadder && Math.hypot(relicSpots.tomb.waterLadder.x - walker.x, relicSpots.tomb.waterLadder.z - walker.z) < 2.4) {
+        exitTombWaterLadder();
+        return;
+      }
+      if (relicSpots.tomb?.historian && Math.hypot(relicSpots.tomb.historian.x - walker.x, relicSpots.tomb.historian.z - walker.z) < 2.5) {
+        readHistorianLetter();
+        return;
+      }
+      if (relics.tombWaterOpen && relicSpots.tomb?.water && Math.hypot(relicSpots.tomb.water.x - walker.x, (relicSpots.tomb.water.z - 2.2) - walker.z) < 2.8) {
+        startTombCrawl(true);
+        return;
+      }
+      if (relics.tombWaterOpen && relicSpots.tomb && Math.hypot(relicSpots.tomb.crawl.x - walker.x, relicSpots.tomb.crawl.z - walker.z) < 2.4) {
+        startTombCrawl();
+        return;
+      }
+      if (relicSpots.tomb && Math.hypot((relicSpots.tomb.x - 3.4) - walker.x, (relicSpots.tomb.z - 18.2) - walker.z) < 2.4) {
+        if (!relics.tombOpened) startTombOpen();
+        else showToast(relics.tombLooted ? '石棺已经空了' : '棺内还有东西,靠近物件按 E 一件件拿');
+        return;
+      }
+      showToast(relics.authorMode ? '作者视角下,红圈就是翻板机关' : '墓道潮湿阴冷。机关廊会惩罚走错的一侧');
+      return;
+    }
     // 地下军火库:梯子返回 / 取冲锋枪 / 补弹药 / 看地图
     if (walker.inBunker) {
       if (Math.hypot(bunkerSpots.ladder.x - walker.x, bunkerSpots.ladder.z - walker.z) < 1.8) {
@@ -5017,11 +8969,72 @@ async function boot() {
       showToast('混凝土墙壁上挂着 1943 年的照片,灯泡还在嗡嗡作响');
       return;
     }
+    const house = nearestCompletedHouse();
+    if (house && useHouse(house)) return;
+    if (placeOrCarryCatapult()) return;
+    const wb = nearestWorkbench();
+    if (wb) {
+      craftFirearm();
+      return;
+    }
+    const gp = nearestGunPart();
+    if (gp) {
+      const src = gunParts.find(p => p.mesh === gp.mesh);
+      if (src) {
+        src.taken = true;
+        src.mesh.visible = false;
+        src.respawnT = 150;
+      }
+      walker[gp.kind]++;
+      startHandAction('pickup');
+      showToast('拾取' + gp.name + ' ×1 · ' + materialLine());
+      return;
+    }
+    const tm = nearestTombMaterial();
+    if (tm) {
+      const src = tombMaterials.find(p => p.mesh === tm.mesh);
+      if (src) {
+        src.taken = true;
+        src.mesh.visible = false;
+      }
+      walker[tm.kind]++;
+      startHandAction('pickup');
+      showToast('拾取' + tm.name + ' ×1 · ' + tombMaterialLine());
+      return;
+    }
+    const curio = nearestCurio();
+    if (curio && useCurio(curio)) return;
+    if (relics.tombFound && relicSpots.tomb && Math.hypot(relicSpots.tomb.x - walker.x, relicSpots.tomb.z - walker.z) < 3.4) {
+      enterTomb();
+      return;
+    }
     // 新岛遗物互动
     if (Math.hypot(relicSpots.altar.x - walker.x, relicSpots.altar.z - walker.z) < 4.5) { useAltar(); return; }
+    if (relicSpots.stoneAltar && Math.hypot(relicSpots.stoneAltar.x - walker.x, relicSpots.stoneAltar.z - walker.z) < 4.5) {
+      if (trustByMercy('stone')) return;
+    }
+    if (relicSpots.mistAltar && Math.hypot(relicSpots.mistAltar.x - walker.x, relicSpots.mistAltar.z - walker.z) < 4.5) {
+      if (trustByMercy('mist')) return;
+    }
     if (Math.hypot(relicSpots.totem.x - walker.x, relicSpots.totem.z - walker.z) < 3.5) { readTotem(); return; }
     if (Math.hypot(relicSpots.chest.x - walker.x, relicSpots.chest.z - walker.z) < 3.0) { openRelicChest(); return; }
     if (Math.hypot(relicSpots.memorial.x - walker.x, relicSpots.memorial.z - walker.z) < 3.5) { openMemorial(); return; }
+    if (Math.hypot(relicSpots.village.x - walker.x, relicSpots.village.z - walker.z) < 15) {
+      if (!walker.savage) {
+        showToast('🗿 石牙村图腾低鸣,只有野人一族能进入这个村落');
+        return;
+      }
+      allyStoneVillage();
+      return;
+    }
+    if (relicSpots.village2 && Math.hypot(relicSpots.village2.x - walker.x, relicSpots.village2.z - walker.z) < 15) {
+      if (!walker.savage) {
+        showToast('🌫 雾叶村的迷雾图腾挡住了你,只有野人一族能进入');
+        return;
+      }
+      allyMistVillage();
+      return;
+    }
     if (Math.hypot(relicSpots.wreck.x - walker.x, relicSpots.wreck.z - walker.z) < 5.0) {
       showToast('⚓ 船骨上长满藤壶,船名依稀可辨:「西比里亚科夫」—— 岛上那座红五星墓碑,纪念的就是她的锅炉工帕维尔');
       return;
@@ -5054,7 +9067,7 @@ async function boot() {
       if (!guarded && Math.random() < 0.25) {
         gt.tame = Math.max(0, gt.tame - 10);
         walker.stamina = Math.max(0, walker.stamina - 30);
-        damageWalker(25, '被' + gt.sp.name + '甩头反击,当场毙命');
+        damageWalker(25, '被' + gt.sp.name + '甩头反击,当场毙命', true);
         walker.shakeT = Math.max(walker.shakeT, 1.2);
         // 击退:往岛心方向推开 3.5m(不推进深水)
         const kdx = walker.x - gt.x, kdz = walker.z - gt.z;
@@ -5062,10 +9075,8 @@ async function boot() {
         const nx = walker.x + (kdx / kd) * 3.5, nz = walker.z + (kdz / kd) * 3.5;
         if (groundHeightAt(nx, nz) > -1.1) { walker.x = nx; walker.z = nz; }
         showToast('💥 ' + gt.sp.name + '猛然甩头反击!你被掀翻在地(生命 -25 · 驯服度 -10)');
-        if (walker.hp <= 0) return;
-        if (walker.stamina <= 0) {
-          showToast('你被拍晕了……同伴把你拖回了快艇');
-          exitIsland(true);
+        if (walker.hp <= 0 || walker.stamina <= 0) {
+          titanKnockout(gt.sp.name + '甩头反击');
         }
         return;
       }
@@ -5182,10 +9193,21 @@ async function boot() {
       if (!st.taken && Math.hypot(st.x - walker.x, st.z - walker.z) < 2.5) {
         st.taken = true;
         st.mesh.visible = false;
-        st.respawnT = 70;
-        walker.stone++;
+        st.respawnT = 45;
+        walker.stone += 3;
         startHandAction('pickup');
-        showToast('拾取石块 ×1(Q 打磨箭矢)');
+        showToast('拾取石块 ×3(Q 打磨箭矢)');
+        return;
+      }
+    }
+    for (const rp of ropes) {
+      if (!rp.taken && Math.hypot(rp.x - walker.x, rp.z - walker.z) < 3) {
+        rp.taken = true;
+        rp.mesh.visible = false;
+        rp.respawnT = 120;
+        walker.rope++;
+        startHandAction('pickup');
+        showToast('拾取绳子 ×1 · 建房和升级都要用');
         return;
       }
     }
@@ -5198,11 +9220,57 @@ async function boot() {
     uCampfire.value.set(fire.x, fire.z, fireI, 0);
     flame.visible = fireI > 0.02;
     smoke.visible = fireI > 0.02;
+    updateTombDig(dt);
+    updateTombOpen(dt);
+    updateTombCrawl(dt);
     // 漂木重生 / 椰子再生
     for (const dw of driftwoods) {
       if (dw.taken) {
         dw.respawnT -= dt;
         if (dw.respawnT <= 0) { dw.taken = false; dw.mesh.visible = true; }
+      }
+    }
+    for (const rp of ropes) {
+      if (rp.taken) {
+        rp.respawnT -= dt;
+        if (rp.respawnT <= 0) { rp.taken = false; rp.mesh.visible = true; }
+      }
+    }
+    for (const gp of gunParts) {
+      if (gp.taken) {
+        gp.respawnT -= dt;
+        if (gp.respawnT <= 0) { gp.taken = false; gp.mesh.visible = true; }
+      }
+    }
+    for (const c of curios) {
+      c.cd = Math.max(0, c.cd - dt);
+      c.challengeT = Math.max(0, (c.challengeT || 0) - dt);
+      c.hitT = Math.max(0, (c.hitT || 0) - dt);
+      if (c.taken) {
+        c.respawnT -= dt;
+        if (c.respawnT <= 0) {
+          c.taken = false;
+          c.mesh.visible = (c.kind !== 'mushroom' && c.kind !== 'firefly') || isMushroomNight();
+        }
+      } else {
+        if (c.kind === 'mushroom' || c.kind === 'firefly') {
+          const night = isMushroomNight();
+          c.mesh.visible = night;
+          if (!night) continue;
+          const flicker = (c.kind === 'firefly' ? 0.88 : 0.75)
+            + 0.20 * Math.sin(t * 5.5 + c.x * 0.07) + 0.08 * Math.sin(t * 13.0 + c.z * 0.11);
+          c.mesh.scale.setScalar(Math.max(0.72, flicker));
+          c.mesh.position.y = c.baseY + Math.sin(t * (c.kind === 'firefly' ? 3.3 : 2.4) + c.x) * (c.kind === 'firefly' ? 0.08 : 0.045);
+        } else {
+          c.mesh.position.y = c.baseY;
+        }
+        if (c.kind === 'coconutTarget' && c.hitT > 0) {
+          c.mesh.rotation.z = Math.sin(t * 28) * 0.12 * c.hitT;
+          c.mesh.position.y = c.baseY + Math.sin(t * 18) * 0.035 * c.hitT;
+        } else if (c.kind === 'coconutTarget') {
+          c.mesh.rotation.z *= Math.max(0, 1 - dt * 8);
+        }
+        c.mesh.rotation.y += (c.kind === 'drum' ? 0.08 : c.kind === 'tide' ? 0.04 : 0.18) * dt;
       }
     }
     for (const p of palmData) {
@@ -5224,18 +9292,85 @@ async function boot() {
       }
     }
     updateTreeFalls(dt);
-    for (const rk of rockData) if (rk.cd > 0) rk.cd -= dt;   // 礁石凿击冷却
+    for (const rk of rockData) {
+      if (rk.cd > 0) rk.cd -= dt;       // 礁石凿击冷却
+      if (rk.cutCd > 0) rk.cutCd -= dt; // 投石机巨石弹切割冷却
+    }
     if (!walker.on) {
       uSurvival.value += (0 - uSurvival.value) * Math.min(1, dt * 2);
       return;
     }
-    // 三围衰减:饥饿约 6 分钟见底,口渴约 4 分钟(海之眷顾减半)
-    const drainK = walker.buff ? 0.5 : 1;
+    for (const bs of buildSites) bs.useCd = Math.max(0, (bs.useCd || 0) - dt);
+    for (let i = catapultEffects.length - 1; i >= 0; i--) {
+      const ef = catapultEffects[i];
+      ef.life += dt;
+      const k = Math.max(0, 1 - ef.life / ef.maxLife);
+      if (ef.mesh.material) {
+        ef.mesh.material.opacity = ef.kind === 'trail' ? 0.72 * k : 0.55 * k;
+        ef.mesh.material.transparent = true;
+      }
+      if (ef.kind === 'ring') ef.mesh.scale.setScalar(1 + ef.life * 0.75);
+      if (ef.life >= ef.maxLife) {
+        scene.remove(ef.mesh);
+        if (ef.mesh.geometry) ef.mesh.geometry.dispose();
+        catapultEffects.splice(i, 1);
+      }
+    }
+    if (walker.carryingCatapult) {
+      const cp = walker.carryingCatapult;
+      cp.x = walker.x - Math.sin(walker.viewYaw) * 0.9;
+      cp.z = walker.z - Math.cos(walker.viewYaw) * 0.9;
+      cp.y = walker.y;
+      cp.dir = walker.viewYaw + Math.PI;
+      cp.mesh.position.set(cp.x, cp.y + 0.62, cp.z);
+      cp.mesh.rotation.set(-0.18, cp.dir, 0.10);
+      cp.mesh.scale.set(1.15, 1.15, 1.15);
+    }
+    const thirstSunMul = () => {
+      const sun = Math.max(0, uSunDir.value.y);
+      const day = Math.min(1, sun / 0.56);
+      return 0.22 + day * 1.58;          // 夜里很慢,正午接近 1.8 倍
+    };
+    if (walker.cuttingRock) {
+      const job = walker.cuttingRock;
+      job.t -= dt;
+      walker.hunger = Math.max(0, walker.hunger - dt * 0.55);
+      walker.thirst = Math.max(0, walker.thirst - dt * 0.70 * thirstSunMul());
+      if (Math.hypot(job.rock.x - walker.x, job.rock.z - walker.z) > 5.2) {
+        walker.cuttingRock = null;
+        showToast('你离开了礁石,巨石弹切割中断');
+      } else if (job.t <= 0) {
+        job.rock.cutCd = 240;
+        walker.catapultAmmo += 2;
+        walker.cuttingRock = null;
+        startHandAction('pickup');
+        showToast('🪨 海边礁石被切成 2 块投石机巨石弹(现有 ' + walker.catapultAmmo + ' 发)');
+      } else if (Math.floor(job.t) % 30 === 0 && (!job.ping || Math.abs(job.ping - job.t) > 2)) {
+        job.ping = job.t;
+        startHandAction('chop');
+      }
+    }
+    // 三围衰减:饥饿约 6 分钟见底;口渴受太阳高度影响,夜里很慢、烈日下更快。
+    const houseBonus = activeHouseBonus();
+    let drainK = walker.buff ? 0.5 : 1;
+    if (houseBonus) {
+      drainK *= houseBonus.drainMul;
+      walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + dt * houseBonus.stamina);
+      if (houseBonus.thirst > 0) walker.thirst = Math.min(100, walker.thirst + dt * houseBonus.thirst);
+      if (houseBonus.detox > 0) {
+        walker.poisonT = Math.max(0, walker.poisonT - dt * houseBonus.detox);
+        walker.poisonBlurT = Math.max(0, walker.poisonBlurT - dt * houseBonus.detox);
+      }
+    }
     walker.hunger = Math.max(0, walker.hunger - dt * (100 / 360) * drainK);
-    walker.thirst = Math.max(0, walker.thirst - dt * (100 / 240) * drainK);
+    walker.thirst = Math.max(0, walker.thirst - dt * (100 / 240) * drainK * thirstSunMul());
     // 生命缓慢回复(吃饱喝足时;神力翻倍)
-    if (walker.hp > 0 && walker.hp < 100 && walker.hunger > 30 && walker.thirst > 30) {
-      walker.hp = Math.min(100, walker.hp + dt * (walker.buff ? 4 : 1.5));
+    const hpMax = walker.savageRole === 'shield' ? 260 : walker.savageRole === 'swordsman' ? 220 : walker.savageRole === 'poisoner' ? 180 : PLAYER_HP_MAX;
+    if (walker.hp > 0 && walker.hp < hpMax && walker.hunger > 30 && walker.thirst > 30) {
+      walker.hp = Math.min(hpMax, walker.hp + dt * (walker.buff ? 4 : 1.5));
+    }
+    if (houseBonus && houseBonus.hp > 0 && walker.hp > 0) {
+      walker.hp = Math.min(hpMax, walker.hp + dt * houseBonus.hp);
     }
     // 第一人称:视角朝向决定 WASD 方向,Shift 切换疾跑(耗体力)
     let ix = 0, iz = 0;
@@ -5243,10 +9378,37 @@ async function boot() {
     if (driveKeys.brake) iz -= 1;
     if (driveKeys.left) ix -= 1;
     if (driveKeys.right) ix += 1;
-    const moving = ix !== 0 || iz !== 0;
+    const moving = (ix !== 0 || iz !== 0) && !walker.swordTurret && walker.tombDigT <= 0 && walker.tombCrawlT <= 0 && relics.tombOpeningT <= 0;
+    if (recall.active) {
+      if (!recall.target || recall.target.stage <= 0 || walker.inBunker || walker.inTomb || walker.swordTurret || riding) {
+        cancelRecall('回城中断');
+      } else if (moving) {
+        cancelRecall('移动了,回城中断');
+      } else {
+        recall.t += dt;
+        const sec = Math.ceil(5 - recall.t);
+        if (sec !== recall.lastPing && recall.t < 5) {
+          recall.lastPing = sec;
+          showToast('回城中 ' + Math.max(1, sec) + 's · 受到攻击会中断');
+        }
+        walker.stamina = Math.min(walker.buff ? 200 : 100, walker.stamina + dt * 10);
+        if (recall.t >= 5) {
+          finishRecall();
+          return;
+        }
+      }
+    }
     const maxSt = walker.buff ? 200 : 100;
-    const sprint = shiftDown && moving && walker.stamina > 4;
-    const spd = (sprint ? 6.4 : 3.3) * (walker.buff ? 1.5 : 1) * (walker.savage ? 1.3 : 1);   // 异能:疾行如风;野人矫健
+    const sprintLockedByCatapult = walker.carryingCatapult && !walker.buff;
+    const sprint = shiftDown && moving && walker.stamina > 4 && !sprintLockedByCatapult;
+    if (sprintLockedByCatapult && moving && (!walker.carryWarnT || t - walker.carryWarnT > 3)) {
+      walker.carryWarnT = t;
+      showToast('投石机太沉,搬运时只能走路;吞下神肉后才可扛着疾跑');
+    }
+    const roleSpeed = walker.savageRole === 'shield' ? 0.82
+      : walker.savageRole === 'swordsman' ? 1.16
+        : walker.savageRole === 'poisoner' ? 1.04 : 1.0;
+    const spd = (sprint ? 6.4 : 3.3) * (walker.buff ? 1.5 : 1) * (walker.savage ? 1.3 * roleSpeed : 1);   // 异能:疾行如风;野人矫健
     if (sprint) walker.stamina = Math.max(0, walker.stamina - dt * (walker.buff ? 5.5 : 11));
     else walker.stamina = Math.min(maxSt, walker.stamina + dt * 7);
     if (moving) {
@@ -5257,18 +9419,58 @@ async function boot() {
       const nx = walker.x + dx * spd * dt, nz = walker.z + dz * spd * dt;
       if (walker.inBunker) {                            // 军火库:混凝土墙内活动
         if (Math.abs(nx - BUNKER.x) < 5.4 && Math.abs(nz - BUNKER.z) < 4.4) { walker.x = nx; walker.z = nz; }
-      } else if (groundHeightAt(nx, nz) > -1.1) { walker.x = nx; walker.z = nz; }  // 及腰深水禁足
+      } else if (walker.inTomb && relicSpots.tomb) {     // 古墓:石室内活动
+        const lx = nx - relicSpots.tomb.x, lz = nz - relicSpots.tomb.z;
+        const inMain = Math.abs(lx) < 6.0 && lz < 3.8 && lz > -20.8;
+        const inBendA = lx > 2.4 && lx < 14.4 && lz < -16.0 && lz > -20.4;
+        const inBendB = lx > 11.8 && lx < 16.6 && lz < -17.6 && lz > 3.2;
+        const inWater = lx > 7.2 && lx < 21.2 && lz < 3.0 && lz > -8.0;
+        if (inMain || inBendA || inBendB || inWater) { walker.x = nx; walker.z = nz; }
+      } else if (groundHeightAt(nx, nz) > -1.1) {
+        const nearVillage = relicSpots.village
+          && newIslandHeightAt(nx, nz) > 0.5
+          && (Math.hypot(nx - relicSpots.village.x, nz - relicSpots.village.z) < 13.5
+            || (relicSpots.village2 && Math.hypot(nx - relicSpots.village2.x, nz - relicSpots.village2.z) < 13.5));
+        if (!nearVillage || walker.savage) {
+          walker.x = nx; walker.z = nz;
+        } else if (!walker.villageBlockT || simTime - walker.villageBlockT > 2.5) {
+          walker.villageBlockT = simTime;
+          showToast('🗿 野人村落的图腾挡住了你 —— 只有选择 2 重生为野人才能进去');
+        }
+      }  // 及腰深水禁足
       walker.phase += spd * dt * 2.0;
     }
-    walker.y = walker.inBunker ? BUNKER.floorY : groundHeightAt(walker.x, walker.z);
+    if (walker.swordTurret) {
+      walker.x = walker.swordTurret.x;
+      walker.z = walker.swordTurret.z;
+      walker.y = walker.swordTurret.y + SWORD_TURRET_EYE_LIFT - 1.62;
+      walker.swordTurret.mesh.rotation.y = walker.viewYaw;
+    } else {
+      walker.y = walker.inBunker ? BUNKER.floorY
+        : walker.inTomb && relicSpots.tomb ? (walker.tombCrawlT > 0 ? walker.y : relicSpots.tomb.floorY)
+          : groundHeightAt(walker.x, walker.z);
+    }
+    updateTombTraps();
+    updateTurretHipCross();
     // 踏上新岛:解锁死亡重生选项
     if (!newIsland.unlocked && newIslandHeightAt(walker.x, walker.z) > 0.5) {
       newIsland.unlocked = true;
-      showToast('🏝 你踏上了未知的大荒岛!这里有野人出没……(磁吸炸弹按 G 投掷)');
+      newIsland.landedT = 0;
+      showToast('🏝 你踏上了更远更大的迷雾雨林岛!野人会先观望 30 秒,山脊上还有一座废弃长城制高点');
+    }
+    if (relics.thirdUnlocked && !relics.thirdReached && remoteIslandHeightAt(THIRD_ISLAND, walker.x, walker.z) > 0.8) {
+      relics.thirdReached = true;
+      showToast('🪨 结局 · 石牙远征:你带着强攻派的投石机关来到第三岛,石牙村把你尊为攻城先祖');
+    }
+    if (relics.fourthUnlocked && !relics.fourthReached && remoteIslandHeightAt(FOURTH_ISLAND, walker.x, walker.z) > 0.8) {
+      relics.fourthReached = true;
+      showToast('🌫 结局 · 雾叶迁徙:你护送避战派穿过迷雾来到第四岛,雾叶村从此远离战争');
     }
     // 第一人称相机:头部高度 + 步伐/呼吸浮沉(+ 被撞时的晃动)
+    walker.jumpT = Math.max(0, walker.jumpT - dt);
     let eyeY = walker.y + 1.62
-      + (moving ? Math.sin(walker.phase * 2) * 0.045 : Math.sin(t * 1.6) * 0.012);
+      + (moving ? Math.sin(walker.phase * 2) * 0.045 : Math.sin(t * 1.6) * 0.012)
+      + Math.sin(Math.min(1, walker.jumpT / 0.42) * Math.PI) * 0.55;
     let shakeX = 0, shakeZ = 0;
     if (walker.shakeT > 0) {
       walker.shakeT -= dt;
@@ -5283,33 +9485,40 @@ async function boot() {
       walker.x + Math.sin(walker.viewYaw) * cp,
       eyeY + Math.sin(walker.viewPitch),
       walker.z + Math.cos(walker.viewYaw) * cp);
-    // 开镜:狙击按倍率收窄 FOV,冲锋枪/步枪小幅放大(无框瞄具)
+    // 开镜:狙击按倍率收窄 FOV;炮台使用独立 7×瞄准镜,不受炮身/脚下遮挡限制。
     const targetFov = aim.on
-      ? (walker.weapon === 'sniper' ? 55 / aim.zoom : 55 / 1.6)
+      ? (walker.swordTurret ? 55 / 7 : walker.weapon === 'sniper' ? 55 / aim.zoom : 55 / 1.6)
       : 55;
     if (Math.abs(camera.fov - targetFov) > 0.05) {
       camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 10);
       camera.updateProjectionMatrix();
     }
-    // 虚脱:画面四周变暗;饥饿口渴双见底且持续 8 秒 → 昏倒被救回船上
+    // 无敌之身:持续清除所有负面状态,并把生存数值维持在角色上限。
+    // 放在本帧生存消耗与移动结算之后,避免疾跑、炎热或持续毒伤留下残余扣减。
+    if (walker.godMode) {
+      walker.hp = walkerMaxHp();
+      walker.stamina = walker.buff ? 200 : 100;
+      walker.hunger = 100;
+      walker.thirst = 100;
+      walker.poisonT = 0;
+      walker.poisonBlurT = 0;
+      walker.faintT = 0;
+      walker.shakeT = 0;
+    }
+    // 虚脱:只保留画面四周变暗;正常生存状态不会再触发昏倒
     const worst = Math.min(walker.hunger, walker.thirst);
     const distressT = worst <= 0 ? 1 : Math.max(0, 1 - worst / 30) * 0.7;
     uSurvival.value += (distressT - uSurvival.value) * Math.min(1, dt * 2);
-    if (worst <= 0) {
-      walker.faintT += dt;
-      if (walker.faintT > 8) {
-        showToast('体力不支昏倒了……被同伴救回了快艇');
-        exitIsland(true);
-        return;
-      }
-    } else walker.faintT = 0;
+    walker.faintT = 0;
     // 求生 HUD
-    $('ih-hp').style.width = walker.hp + '%';
+    $('ih-hp').style.width = Math.min(100, walker.hp / hpMax * 100) + '%';
     $('ih-hunger').style.width = walker.hunger + '%';
     $('ih-thirst').style.width = walker.thirst + '%';
     $('ih-stamina').style.width = (walker.stamina / (walker.buff ? 200 : 100) * 100) + '%';
     $('ih-coconut').textContent = walker.coconut;
     $('ih-wood').textContent = walker.wood;
+    $('ih-timber').textContent = walker.timber;
+    $('ih-rope').textContent = walker.rope;
     $('ih-arrows').textContent = walker.arrows;
     $('ih-traps').textContent = walker.traps;
     $('ih-stone').textContent = walker.stone;
@@ -5318,10 +9527,26 @@ async function boot() {
     $('ih-godmeat').textContent = walker.godMeat;
     const onNewIsle = newIslandHeightAt(walker.x, walker.z) > 0.3;
     $('ih-bombs-item').style.display = onNewIsle ? 'flex' : 'none';
-    if (onNewIsle) $('ih-bombs').textContent = walker.bombs + (walker.bombCd > 0 ? '(' + Math.ceil(walker.bombCd) + 's)' : '');
-    if (walker.rifle || walker.sniper || walker.smg) {
-      $('ih-weapon').textContent = walker.weapon === 'sniper' ? '狙击枪' : walker.weapon === 'smg' ? '冲锋枪' : walker.weapon === 'rifle' ? '步枪' : '弓箭';
-      $('ih-bullets').textContent = walker.weapon === 'smg' ? walker.smgAmmo : walker.weapon === 'sniper' ? walker.sniperAmmo : walker.bullets;
+    if (onNewIsle) $('ih-bombs').textContent = walker.bombAdmin
+      ? '∞ 无冷却'
+      : (walker.bombs > 0 ? walker.bombs + ' 库存' : '充能中')
+        + (walker.bombCd > 0 ? '(' + Math.ceil(walker.bombCd) + 's)' : '');
+    if (walker.rifle || walker.sniper || walker.smg || walker.spear || walker.catapult || walker.swordTurret) {
+      $('ih-weapon-item').style.display = 'flex';
+      $('ih-weapon').textContent = walker.swordTurret ? '长剑炮台'
+        : walker.weapon === 'sniper' ? '狙击枪'
+        : walker.weapon === 'smg' ? '冲锋枪'
+          : walker.weapon === 'rifle' ? '步枪'
+            : walker.weapon === 'spear' ? '长矛' : '弓箭';
+      const hasAmmo = walker.swordTurret || walker.weapon === 'smg' || walker.weapon === 'sniper' || walker.weapon === 'rifle' || walker.catapult;
+      $('ih-bullets-item').style.display = hasAmmo ? 'flex' : 'none';
+      if (hasAmmo) $('ih-bullets').textContent = walker.swordTurret ? walker.swordTurret.ammo + '/1000'
+        : walker.weapon === 'smg' ? walker.smgAmmo
+        : walker.weapon === 'sniper' ? walker.sniperAmmo
+          : walker.weapon === 'rifle' ? walker.bullets
+            : walker.catapult
+              ? '巨石' + walker.catapultAmmo + (walker.cuttingRock ? '(' + Math.ceil(walker.cuttingRock.t) + 's)' : '')
+              : walker.bullets;
     }
     $('ih-hint').textContent = islandHint();
   }
@@ -5368,11 +9593,11 @@ async function boot() {
       if (spoutState.strength > 0.05) {
         const dx = spoutState.x - b.x, dz = spoutState.z - b.z;
         const d = Math.hypot(dx, dz) || 1;
-        if (d < 150) {
-          const pull = spoutState.strength * (1 - d / 150);
+        if (d < spoutState.radius) {
+          const pull = spoutState.strength * (1 - d / spoutState.radius) * (spoutState.target === b ? 1.6 : 1);
           b.x += ((dx / d) * 6.0 + (-dz / d) * 3.0) * pull * dt;
           b.z += ((dz / d) * 6.0 + (dx / d) * 3.0) * pull * dt;
-          if (d < 22) capsizeBoat(b);
+          if (d < Math.max(22, spoutState.radius * 0.14)) capsizeBoat(b);
         }
       }
       // 海啸波前扫过:巨浪可能掀翻船只
@@ -5445,7 +9670,7 @@ async function boot() {
     $('drive-hud').classList.toggle('show', on);
     if (on) {
       showToast(driveTarget.kind === 'speed'
-        ? '超级快艇:51 节级 · W/S 油门 · A/D 舵 · 到浅滩按 V 下船登岛'
+        ? '超级快艇:51 节级 · W/S 油门 · A/D 舵 · 旧岛浅滩可下船,第二岛只能骑泰坦登陆'
         : 'W/S 油门 · A/D 舵 · 滚轮视距 · B 下船');
       camAnim = null;
     } else {
@@ -5458,6 +9683,7 @@ async function boot() {
   function toggleDrive(boat) {
     if (driving && driveTarget === boat) {
       if (canDisembark()) enterIsland();        // 浅滩下船 = 登岛
+      else if (isNearSecondIslandByBoat()) showToast('第二岛的迷雾拒绝船只靠岸 —— 只能骑满足条件的泰坦登陆');
       else setDriving(false);
     } else setDriving(true, boat);
   }
@@ -5520,15 +9746,23 @@ async function boot() {
     $('dh-throttle').textContent = Math.round(driveTarget.throttle * 100) + '%';
     $('dh-rudder').textContent = (driveTarget.rudder < 0 ? '左 ' : driveTarget.rudder > 0 ? '右 ' : '')
       + Math.round(Math.abs(driveTarget.rudder) * 35) + '°';
-    // 靠近岛滩且低速:提示可登岛
-    $('dh-hint').style.display = canDisembark() ? '' : 'none';
+    // 靠近岛滩且低速:旧岛可登;第二岛只允许泰坦登陆
+    if (canDisembark()) {
+      $('dh-hint').textContent = '按 V 下船登岛';
+      $('dh-hint').style.display = '';
+    } else if (isNearSecondIslandByBoat()) {
+      $('dh-hint').textContent = '第二岛只能骑泰坦登陆';
+      $('dh-hint').style.display = '';
+    } else {
+      $('dh-hint').style.display = 'none';
+    }
   }
 
   /* ------------------- 荒岛导航标记 ------------------- */
   /* 每帧把岛/船的世界坐标投影到屏幕,画图标 + 虚线 + 剩余米数。
      岛在屏幕外(或背后)时,标记按比例收缩贴到屏幕边缘指示方向。 */
   const navSvg = $('nav-svg'), navLine = $('nav-line');
-  const navMarker = $('nav-marker'), navDist = $('nav-dist');
+  const navMarker = $('nav-marker'), navDist = $('nav-dist'), navLabel = $('nav-label'), navIcon = $('nav-icon');
   const _navV = new THREE.Vector3();
   const _navSrc = { x: 0, y: 0 }, _navDst = { x: 0, y: 0 };
   function navProject(wx, wy, wz, out) {
@@ -5541,7 +9775,121 @@ async function boot() {
     out.y = (-y * 0.5 + 0.5) * window.innerHeight;
   }
   let navDistShown = -1;
+  let eggNavTarget = null;
+  const tideNav = { until: 0, targets: [], markers: [] };
+  function currentNavSource() {
+    return {
+      x: (walker.on || riding) ? camera.position.x : driving ? driveTarget.x : pilotSub ? sub.x : speedBoat.x,
+      y: (walker.on || riding) ? camera.position.y
+        : driving ? (driveTarget.shown?.y ?? driveTarget.y) + 2.5
+          : pilotSub ? sub.y + 2.5 : (speedBoat.shown?.y ?? speedBoat.y) + 2.5,
+      z: (walker.on || riding) ? camera.position.z : driving ? driveTarget.z : pilotSub ? sub.z : speedBoat.z,
+    };
+  }
+  function ensureTideMarkers() {
+    while (tideNav.markers.length < 3) {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;left:0;top:0;z-index:16;pointer-events:none;opacity:0;'
+        + 'transform:translate(-50%,-135%);padding:5px 9px;border:1px solid rgba(150,230,235,.42);'
+        + 'border-radius:999px;background:rgba(5,18,24,.70);backdrop-filter:blur(8px);'
+        + 'color:#d8ffff;font:600 11px ui-monospace,Menlo,monospace;white-space:nowrap;'
+        + 'box-shadow:0 0 18px rgba(80,220,230,.18);transition:opacity .18s ease;';
+      document.body.appendChild(el);
+      tideNav.markers.push(el);
+    }
+  }
+  function updateTideMarkers() {
+    ensureTideMarkers();
+    if (simTime > tideNav.until || tideNav.targets.length === 0) {
+      for (const el of tideNav.markers) el.style.opacity = '0';
+      return;
+    }
+    const src = currentNavSource();
+    tideNav.targets.forEach((tg, i) => {
+      const el = tideNav.markers[i];
+      const ty = groundHeightAt(tg.x, tg.z) + 8;
+      const out = { x: 0, y: 0 };
+      navProject(tg.x, ty, tg.z, out);
+      const d = Math.hypot(tg.x - src.x, tg.z - src.z);
+      el.textContent = (tg.icon || '🏝') + ' ' + tg.name + ' · ' + Math.round(d) + 'm';
+      el.style.transform = 'translate(' + Math.round(out.x) + 'px,' + Math.round(out.y) + 'px) translate(-50%,-135%)';
+      el.style.opacity = '1';
+    });
+    for (let i = tideNav.targets.length; i < tideNav.markers.length; i++) tideNav.markers[i].style.opacity = '0';
+  }
+  function nearestAnyTreeTarget() {
+    let best = null, bd = 1e9;
+    const scan = (data, kind) => {
+      data.forEach((tr) => {
+        if (tr.gone || tr.falling) return;
+        const d = Math.hypot(tr.x - walker.x, tr.z - walker.z);
+        if (d < bd) { bd = d; best = { name: kind + '(砍树得木材)', icon: '🌲', x: tr.x, z: tr.z }; }
+      });
+    };
+    scan(palmData, '棕榈');
+    scan(canopyData, '阔叶树');
+    return best;
+  }
+  function tombMaterialNavTarget() {
+    if (!walker.on || !relics.tombFound || relics.tombKit || walker.inTomb || !relicSpots.tomb) return null;
+    if (Math.hypot(walker.x - relicSpots.tomb.x, walker.z - relicSpots.tomb.z) <= 10) relics.tombGuide = true;
+    if (!relics.tombGuide) return null;
+    const needs = [
+      { kind: 'tombIron', need: 6, have: walker.tombIron, name: '铁锭', icon: '⛓' },
+      { kind: 'tombLamp', need: 2, have: walker.tombLamp, name: '灯油罐', icon: '🕯' },
+      { kind: 'tombHandle', need: 2, have: walker.tombHandle, name: '硬木柄', icon: '🪵' },
+    ];
+    let best = null, bd = 1e9;
+    for (const nd of needs) {
+      if (nd.have >= nd.need) continue;
+      for (const tm of tombMaterials) {
+        if (tm.taken || tm.kind !== nd.kind) continue;
+        const d = Math.hypot(tm.x - walker.x, tm.z - walker.z);
+        if (d < bd) { bd = d; best = { name: nd.name + ' ' + nd.have + '/' + nd.need, icon: nd.icon, x: tm.x, z: tm.z }; }
+      }
+    }
+    if (walker.rope < 2) {
+      for (const rp of ropes) {
+        if (rp.taken) continue;
+        const d = Math.hypot(rp.x - walker.x, rp.z - walker.z);
+        if (d < bd) { bd = d; best = { name: '绳子 ' + walker.rope + '/2', icon: '🪢', x: rp.x, z: rp.z }; }
+      }
+    }
+    if (walker.timber < 4) {
+      const tr = nearestAnyTreeTarget();
+      if (tr) {
+        const d = Math.hypot(tr.x - walker.x, tr.z - walker.z);
+        if (d < bd) best = { ...tr, name: '木材 ' + walker.timber + '/4' };
+      }
+    }
+    return best;
+  }
   function updateNavMarker() {
+    updateTideMarkers();
+    const autoTombTarget = tombMaterialNavTarget();
+    const navTarget = autoTombTarget || eggNavTarget;
+    if (navTarget) {
+      const src = currentNavSource();
+      const sx = src.x, sy = src.y, sz = src.z;
+      const ty = groundHeightAt(navTarget.x, navTarget.z) + 2.8;
+      const dist = Math.hypot(navTarget.x - sx, navTarget.z - sz);
+      navProject(sx, sy, sz, _navSrc);
+      navProject(navTarget.x, ty, navTarget.z, _navDst);
+      navLine.setAttribute('x1', _navSrc.x.toFixed(1));
+      navLine.setAttribute('y1', _navSrc.y.toFixed(1));
+      navLine.setAttribute('x2', _navDst.x.toFixed(1));
+      navLine.setAttribute('y2', _navDst.y.toFixed(1));
+      navLine.style.display = '';
+      navMarker.style.transform =
+        'translate(' + Math.round(_navDst.x) + 'px,' + Math.round(_navDst.y) + 'px) translate(-50%,-130%)';
+      navIcon.textContent = navTarget.icon || '🥚';
+      navLabel.textContent = navTarget.name;
+      navDist.textContent = dist < 8 ? '就在附近' : Math.round(dist) + ' m';
+      navSvg.classList.add('show');
+      navMarker.classList.add('show');
+      if (eggNavTarget && dist < 5) eggNavTarget = null;
+      return;
+    }
     if (walker.on || riding) {                   // 人已在岛上/骑着巨兽,不需要导航
       navSvg.classList.remove('show');
       navMarker.classList.remove('show');
@@ -5559,6 +9907,8 @@ async function boot() {
     navLine.style.display = dist < 50 ? 'none' : '';   // 快到了就收线,只留标记
     navMarker.style.transform =
       'translate(' + Math.round(_navDst.x) + 'px,' + Math.round(_navDst.y) + 'px) translate(-50%,-130%)';
+    navIcon.textContent = '🏝';
+    navLabel.textContent = '荒岛';
     const dm = Math.round(dist);
     if (dm !== navDistShown) {
       navDistShown = dm;
@@ -5571,19 +9921,31 @@ async function boot() {
   // ---- 瞄准镜:按 4 开镜/关镜;狙击「灵眼 3-7×」滚轮调倍率;冲锋枪/步枪红点 ----
   const aim = { on: false, zoom: 4 };        // 灵眼默认 4×
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  function updateTurretHipCross() {
+    if (swordTurret?.mesh) swordTurret.mesh.visible = !(walker.on && walker.swordTurret === swordTurret);
+    const hip = !!(walker.on && walker.swordTurret);
+    $('turret-cross').classList.toggle('show', hip);
+    $('xhair').classList.toggle('hide', !!walker.swordTurret);
+    if (walker.on) handsGroup.visible = !walker.swordTurret;
+  }
   function setAim(on) {
     if (!on) {
       aim.on = false;
       $('scope-mask').classList.remove('show');
       $('reddot').classList.remove('show');
+      updateTurretHipCross();
       return;
     }
     const gun = walker.weapon === 'sniper' ? walker.sniper
       : walker.weapon === 'rifle' ? walker.rifle
       : walker.weapon === 'smg' ? walker.smg : false;
-    if (!walker.on || !gun) { showToast('手里没有枪 —— 按 2 换出枪械再开镜'); return; }
+    if (!walker.on || (!gun && !walker.swordTurret)) { showToast('手里没有枪械/炮台 —— 按 2 换出枪械,或到长城烽火台操控炮台'); return; }
     aim.on = true;
-    if (walker.weapon === 'sniper') {
+    updateTurretHipCross();
+    if (walker.swordTurret) {
+      $('scope-mask').classList.add('show');
+      $('scope-zoom').textContent = '长剑 7.0×';
+    } else if (walker.weapon === 'sniper') {
       $('scope-mask').classList.add('show');
       $('scope-zoom').textContent = '灵眼 ' + aim.zoom.toFixed(1) + '×';
     } else $('reddot').classList.add('show');
@@ -5595,14 +9957,196 @@ async function boot() {
     }
   }, { passive: true });
 
+  // ---- 彩蛋图鉴(L):五位密码解锁;点条目给出方位与距离 ----
+  const EGGS_PASSWORD = '41942';         // 图鉴锁密码(五位)
+  const AUTHOR_PASSWORD = '92741';       // 作者权限密码(9 键)
+  let eggsUnlocked = false;
+  const EGG_SPOTS = () => {
+    const spots = {
+      altar:      { name: '古老祭坛',     icon: '🗿', x: relicSpots.altar.x,      z: relicSpots.altar.z },
+      stonealtar: { name: '石牙信任祭坛', icon: '🪨', x: relicSpots.stoneAltar.x, z: relicSpots.stoneAltar.z },
+      mistaltar:  { name: '雾叶信任祭坛', icon: '🌫', x: relicSpots.mistAltar.x,  z: relicSpots.mistAltar.z },
+      totem:      { name: '图腾柱',       icon: '🗿', x: relicSpots.totem.x,      z: relicSpots.totem.z },
+      chest:      { name: '鎏金宝箱',     icon: '⚔', x: relicSpots.chest.x,      z: relicSpots.chest.z },
+      memorial:   { name: '红五星墓碑',   icon: '🪦', x: relicSpots.memorial.x,   z: relicSpots.memorial.z },
+      wreck:      { name: '沉船残骸',     icon: '⚓', x: relicSpots.wreck.x,      z: relicSpots.wreck.z },
+      stonev:     { name: '石牙村',       icon: '🪨', x: relicSpots.village.x,    z: relicSpots.village.z },
+      mistv:      { name: '雾叶村',       icon: '🌫', x: relicSpots.village2.x,   z: relicSpots.village2.z },
+      third:      { name: THIRD_ISLAND.name,  icon: '🏝', x: THIRD_ISLAND.x,  z: THIRD_ISLAND.z },
+      fourth:     { name: FOURTH_ISLAND.name, icon: '🏝', x: FOURTH_ISLAND.x, z: FOURTH_ISLAND.z },
+      shelter:    { name: '旧岛避难所',   icon: '🏚', x: shelter.x,              z: shelter.z },
+    };
+    if (relics.tombFound && relicSpots.tomb) spots.tomb = { name: '百发盗洞古墓', icon: '🕳', x: relicSpots.tomb.x, z: relicSpots.tomb.z };
+    if (relicSpots.tomb?.historian) spots.historian = { name: '史官遗书', icon: '📜', x: relicSpots.tomb.historian.x, z: relicSpots.tomb.historian.z };
+    return spots;
+  };
+  $('eggs-panel').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-egg]');
+    if (!el) return;
+    const spot = EGG_SPOTS()[el.dataset.egg];
+    if (!spot) { showToast('🥚 这个彩蛋没有固定位置 —— 它藏在这片海的机制里,等你触发'); return; }
+    const dx = spot.x - camera.position.x, dz = spot.z - camera.position.z;
+    const d = Math.hypot(dx, dz);
+    const dirs = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+    const dir = dirs[Math.round(((Math.atan2(dx, -dz) * 180 / Math.PI) + 360) % 360 / 45) % 8];
+    eggNavTarget = spot;
+    showToast('🧭 ' + spot.name + ':在你' + dir + '方约 ' + Math.round(d) + ' 米'
+      + (d < 8 ? ' —— 就在脚边!' : d < 60 ? ' —— 很近了!' : '') + '，已用导航线标出');
+  });
+
+  /* ------------------- 海洋小地图 ------------------- */
+  const mmCanvas = $('minimap-canvas');
+  const mmCtx = mmCanvas.getContext('2d');
+  const mmSize = mmCanvas.width;
+  const mmWorldR = 1500;                 // 覆盖四岛与主航线,不是全 24km 海啸范围
+  const mmCenter = {
+    x: (ISLAND.x + NEW_ISLAND.x + THIRD_ISLAND.x + FOURTH_ISLAND.x) * 0.25,
+    z: (ISLAND.z + NEW_ISLAND.z + THIRD_ISLAND.z + FOURTH_ISLAND.z) * 0.25,
+  };
+  $('mm-scale').textContent = '3 km';
+  function mmPoint(x, z) {
+    return {
+      x: (x - mmCenter.x) / (mmWorldR * 2) * mmSize + mmSize * 0.5,
+      y: (z - mmCenter.z) / (mmWorldR * 2) * mmSize + mmSize * 0.5,
+    };
+  }
+  function drawMmIcon(x, z, heading, color, shape, size = 5) {
+    const p = mmPoint(x, z);
+    if (p.x < -20 || p.y < -20 || p.x > mmSize + 20 || p.y > mmSize + 20) return;
+    mmCtx.save();
+    mmCtx.translate(p.x, p.y);
+    mmCtx.rotate(heading || 0);
+    mmCtx.fillStyle = color;
+    mmCtx.strokeStyle = 'rgba(2,8,12,.75)';
+    mmCtx.lineWidth = 2;
+    mmCtx.beginPath();
+    if (shape === 'tri') {
+      mmCtx.moveTo(0, -size * 1.35);
+      mmCtx.lineTo(size, size);
+      mmCtx.lineTo(-size, size);
+      mmCtx.closePath();
+    } else if (shape === 'diamond') {
+      mmCtx.moveTo(0, -size);
+      mmCtx.lineTo(size, 0);
+      mmCtx.lineTo(0, size);
+      mmCtx.lineTo(-size, 0);
+      mmCtx.closePath();
+    } else {
+      mmCtx.arc(0, 0, size, 0, Math.PI * 2);
+    }
+    mmCtx.fill();
+    mmCtx.stroke();
+    mmCtx.restore();
+  }
+  function updateMinimap() {
+    if (!mmCtx) return;
+    mmCtx.clearRect(0, 0, mmSize, mmSize);
+    const grd = mmCtx.createRadialGradient(mmSize * 0.48, mmSize * 0.45, 20, mmSize * 0.5, mmSize * 0.5, mmSize * 0.72);
+    grd.addColorStop(0, 'rgba(14,70,82,.88)');
+    grd.addColorStop(1, 'rgba(3,18,30,.94)');
+    mmCtx.fillStyle = grd;
+    mmCtx.fillRect(0, 0, mmSize, mmSize);
+    mmCtx.strokeStyle = 'rgba(150,230,235,.10)';
+    mmCtx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      const k = i / 4 * mmSize;
+      mmCtx.beginPath(); mmCtx.moveTo(k, 0); mmCtx.lineTo(k, mmSize); mmCtx.stroke();
+      mmCtx.beginPath(); mmCtx.moveTo(0, k); mmCtx.lineTo(mmSize, k); mmCtx.stroke();
+    }
+    const drawIsland = (isle, label, color) => {
+      const p = mmPoint(isle.x, isle.z);
+      const r = Math.max(4, isle.R / (mmWorldR * 2) * mmSize);
+      mmCtx.beginPath();
+      mmCtx.fillStyle = color;
+      mmCtx.strokeStyle = 'rgba(240,255,240,.45)';
+      mmCtx.lineWidth = 1.4;
+      mmCtx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      mmCtx.fill(); mmCtx.stroke();
+      mmCtx.fillStyle = 'rgba(235,255,250,.78)';
+      mmCtx.font = '600 11px ui-monospace,Menlo,monospace';
+      mmCtx.fillText(label, p.x + r + 3, p.y + 4);
+    };
+    drawIsland(ISLAND, '1', 'rgba(212,192,122,.88)');
+    drawIsland(NEW_ISLAND, '2', 'rgba(70,154,96,.90)');
+    drawIsland(THIRD_ISLAND, '3', 'rgba(150,150,145,.88)');
+    drawIsland(FOURTH_ISLAND, '4', 'rgba(78,128,106,.88)');
+    for (const b of boats) drawMmIcon(b.x, b.z, b.heading, b.kind === 'speed' ? '#ffd85d' : '#e65c50', 'tri', b.kind === 'speed' ? 6 : 5);
+    if (pilotSub) drawMmIcon(sub.x, sub.z, sub.heading, '#8fe8ff', 'diamond', 5);
+    for (const g of titans) {
+      if (g.state === 'gone') continue;
+      drawMmIcon(g.x, g.z, g.dir, g.state === 'tamed' ? '#d8f7ff' : '#b68cff', 'diamond', g.ultimate ? 8 : 6);
+    }
+    let px = camera.position.x, pz = camera.position.z, ph = 0;
+    if (walker.on) { px = walker.x; pz = walker.z; ph = walker.viewYaw; }
+    else if (riding && riddenTitan) { px = riddenTitan.x; pz = riddenTitan.z; ph = riddenTitan.dir; }
+    else if (driving) { px = driveTarget.x; pz = driveTarget.z; ph = driveTarget.heading; }
+    else if (pilotSub) { px = sub.x; pz = sub.z; ph = sub.heading; }
+    drawMmIcon(px, pz, ph, '#ffffff', 'circle', 5);
+    const p = mmPoint(px, pz);
+    mmCtx.strokeStyle = 'rgba(255,255,255,.28)';
+    mmCtx.beginPath();
+    mmCtx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+    mmCtx.stroke();
+  }
+
+  function tryWallClimb() {
+    if (!walker.on || walker.swordTurret || newIslandHeightAt(walker.x, walker.z) < 0.2) return false;
+    const fx = Math.sin(walker.viewYaw), fz = Math.cos(walker.viewYaw);
+    const samples = [
+      { x: walker.x, z: walker.z, reach: 18 },
+      { x: walker.x + fx * 6, z: walker.z + fz * 6, reach: 18 },
+      { x: walker.x + fx * 10, z: walker.z + fz * 10, reach: 14 }
+    ];
+    let best = null;
+    const consider = (x, z, y, label, score) => {
+      if (y < walker.y + 1.8) return;
+      if (!best || score < best.score) best = { x, z, y, label, score };
+    };
+    const high = newIslandGreatWallHighPoint();
+    const hd = Math.hypot(walker.x - high.x, walker.z - high.z);
+    if (hd < 30) {
+      const tx = high.x + Math.sin(walker.viewYaw) * 2.5;
+      const tz = high.z + Math.cos(walker.viewYaw) * 2.5;
+      consider(tx, tz, groundHeightAt(tx, tz), '烽火台平台', hd);
+    }
+    for (const s of samples) {
+      for (let i = 0; i < 33; i++) {
+        if (i === 11 || i === 12 || i === 23) continue;
+        const a = newIslandWallPoint(i), b = newIslandWallPoint(i + 1);
+        const hit = distToSegment2D(s.x, s.z, a.x, a.z, b.x, b.z);
+        if (hit.d > s.reach) continue;
+        const x = a.x + (b.x - a.x) * hit.t;
+        const z = a.z + (b.z - a.z) * hit.t;
+        consider(x, z, groundHeightAt(x, z), '长城墙顶', hit.d + Math.hypot(s.x - walker.x, s.z - walker.z) * 0.2);
+      }
+    }
+    if (!best) return false;
+    walker.x = best.x;
+    walker.z = best.z;
+    walker.y = best.y;
+    walker.jumpT = 0.42;
+    walker.stamina = Math.max(0, walker.stamina - 8);
+    startHandAction('pickup');
+    showToast('🧗 你抓住石缝爬上了' + best.label + ' · 继续靠近最高烽火台按 E 操控长剑炮台');
+    return true;
+  }
+
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     const k = e.key.toLowerCase();
+    if (k === 'tab') {
+      e.preventDefault();
+      toggleGodMode();
+      return;
+    }
     if (k === 'w' || k === 'arrowup') driveKeys.throttle = true;
     if (k === 's' || k === 'arrowdown') driveKeys.brake = true;
     if (k === 'a' || k === 'arrowleft') driveKeys.left = true;
     if (k === 'd' || k === 'arrowright') driveKeys.right = true;
     if (k === 'b') toggleDrive(playerBoat);
+    if (riding && k === ' ') { titanRideAttack('tail'); e.preventDefault(); return; }
+    if (riding && k === 'f') { titanRideAttack('bite'); return; }
+    if (riding && k === 'x') { titanRideAttack('quake'); return; }
     if (k === 'v') {
       if (riding) dismountGiant();
       else if (walker.on) {
@@ -5618,9 +10162,12 @@ async function boot() {
       if (pot) harvestCrabPot(pot); else placeCrabPot();
     }
     if (k === 'h' && walker.on) castRod();
+    if (k === 'n' && walker.on) startCutBoulders();
     if (k === 'r' && walker.on) eatGodMeat();
-    if (k === '2' && walker.on && (walker.rifle || walker.sniper || walker.smg)) {
+    if (k === '3' && walker.on) { startRecall(); e.preventDefault(); return; }
+    if (k === '2' && walker.on && (walker.rifle || walker.sniper || walker.smg || walker.spear)) {
       const order = ['bow'];
+      if (walker.spear) order.push('spear');
       if (walker.rifle) order.push('rifle');
       if (walker.sniper) order.push('sniper');
       if (walker.smg) order.push('smg');
@@ -5629,22 +10176,47 @@ async function boot() {
         ? '端起卡莫星狙击枪(弹药 ' + walker.sniperAmmo + ' 发)'
         : walker.weapon === 'smg'
           ? '端起波波沙冲锋枪(弹鼓 ' + walker.smgAmmo + ' 发 · 按住空格连发)'
+          : walker.weapon === 'spear'
+              ? '握紧野人长矛(空格投掷 · 对好友 35 伤害)'
           : walker.weapon === 'rifle'
             ? '端起莫辛纳甘步枪(子弹 ' + walker.bullets + ' 发)'
             : '换回弓箭(箭 ' + walker.arrows + ' 支)');
     }
     if (k === 'p' && walker.on && !walker.inBunker) tryEnterBunker();
     if (k === '0' && walker.on) tryTitanCode();
+    if (k === '8' && walker.on) tryTombAuthorSkip();
+    if (k === '9' && walker.on) tryAuthorMode();
+    if (k === '6' && walker.on) tryBombAdmin();
     if (k === 'm' && walker.on) tryFusionCode();
+    if (k === 'u' && walker.on && newIslandHeightAt(walker.x, walker.z) > 0.3) { throwMagnetBomb(); return; }
+    if (k === 'l') {                                        // 彩蛋图鉴:五位密码解锁后自由开关
+      const p = $('eggs-panel');
+      if (p.classList.contains('show')) { p.classList.remove('show'); return; }
+      if (!eggsUnlocked) {
+        const code = window.prompt('彩蛋图鉴上着锁 —— 输入五位密码:');
+        if (code === null) return;
+        if (code.trim() !== EGGS_PASSWORD) { showToast('密码不对…… 彩蛋只属于有心人'); return; }
+        eggsUnlocked = true;
+        showToast('🥚 彩蛋图鉴已解锁!点任意条目可看它的方位与距离(以后按 L 直接开关)');
+      }
+      p.classList.add('show');
+    }
     if (k === '4' && walker.on) setAim(!aim.on);
-    if (k === 'k' && walker.on) $('keys-help').classList.toggle('show');
+    if (k === 'k' && walker.on) {
+      updateKeysHelpPanel();
+      $('keys-help').classList.toggle('show');
+    }
     if (k === 'j') setPilotSub(!pilotSub);
+    if (k === '1' && walker.on) {
+      if (!tryWallClimb()) walker.jumpT = Math.max(walker.jumpT, 0.28);
+      e.preventDefault();
+      return;
+    }
     if (k === 'e') {
       if (walker.on) islandInteract();
       else if (canDisembark()) enterIsland();
     }
     if (k === 'g' && walker.on) {
-      if (newIslandHeightAt(walker.x, walker.z) > 0.3) { throwMagnetBomb(); return; }
       if (walker.coconut > 0) {
         walker.coconut--;
         walker.hunger = Math.min(100, walker.hunger + 38);
@@ -5663,9 +10235,19 @@ async function boot() {
       sub.hover = !sub.hover;
       if (sub.hover) sub.holdY = sub.y;
     }
-    if (k === ' ' && walker.on) { shootArrow(); e.preventDefault(); }
+    if (k === ' ' && walker.on) {
+      shootArrow();
+      e.preventDefault();
+    }
     if (k === ' ') spaceHeld = true;
     if (k === 'q' && walker.on) {          // 打磨箭矢:1 木柴 + 1 石块 → 3 支
+      if (walker.savage && walker.spear && walker.venom > 0) {
+        walker.venom--;
+        walker.poisonSpear += 2;
+        startHandAction('pickup');
+        showToast('☠ 你把毒液涂上矛头,制成毒矛 ×2(现有 ' + walker.poisonSpear + ' 支)');
+        return;
+      }
       if (walker.wood >= 1 && walker.stone >= 1) {
         walker.wood--; walker.stone--; walker.arrows += 3;
         startHandAction('pickup');
@@ -5697,6 +10279,7 @@ async function boot() {
     if (k === 'd' || k === 'arrowright') driveKeys.right = false;
     if (k === 'r') subKeys.up = false;
     if (k === 'f') subKeys.down = false;
+    if (k === '3') cancelRecall('松开 3,回城中断');
     if (k === ' ') spaceHeld = false;
   });
   window.addEventListener('wheel', (e) => {
@@ -5704,37 +10287,16 @@ async function boot() {
     chaseDist = Math.max(8, Math.min(30, chaseDist + Math.sign(e.deltaY) * 1.5));
   }, { passive: true });
 
-  // 鼠标移动即可环顾;按住拖动仍保留为兼容操作,快速点按 = 射箭。
+  // 岛上第一人称:拖动鼠标环顾(OrbitControls 此时已禁用);快速点按 = 射箭
   let lookDrag = null;
-  let hoverLook = null;
-  canvas.addEventListener('pointerenter', (e) => {
-    if (e.pointerType !== 'touch') hoverLook = { x: e.clientX, y: e.clientY };
-  });
-  canvas.addEventListener('pointerleave', () => { hoverLook = null; });
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;               // 只有左键进入视角拖动/射箭(开镜用 4 键)
     if (walker.on) lookDrag = { x: e.clientX, y: e.clientY, t: e.timeStamp, moved: 0 };
   });
   window.addEventListener('pointermove', (e) => {
-    const isMouse = !e.pointerType || e.pointerType === 'mouse';
-    if (isMouse && e.buttons === 0 && hoverLook) {
-      const dx = Math.max(-80, Math.min(80,
-        e.movementX || (e.clientX - hoverLook.x)));
-      const dy = Math.max(-80, Math.min(80,
-        e.movementY || (e.clientY - hoverLook.y)));
-      if (walker.on) {
-        walker.viewYaw -= dx * 0.0042;
-        walker.viewPitch = Math.max(-1.15, Math.min(1.15,
-          walker.viewPitch - dy * 0.0042));
-      } else if (controls.enabled && !camAnim && !driving && !pilotSub && !riding) {
-        controls.rotateLeft(dx * 0.0028);
-        controls.rotateUp(dy * 0.0024);
-      }
-    }
-    if (isMouse) hoverLook = { x: e.clientX, y: e.clientY };
     if (!lookDrag || !walker.on) return;
     walker.viewYaw -= (e.clientX - lookDrag.x) * 0.0042;
-    walker.viewPitch = Math.max(-1.15, Math.min(1.15,
+    walker.viewPitch = Math.max(walker.swordTurret ? -1.52 : -1.15, Math.min(1.15,
       walker.viewPitch - (e.clientY - lookDrag.y) * 0.0042));
     lookDrag.moved += Math.abs(e.clientX - lookDrag.x) + Math.abs(e.clientY - lookDrag.y);
     lookDrag.x = e.clientX; lookDrag.y = e.clientY;
@@ -5762,9 +10324,14 @@ async function boot() {
     bloomed.mul(0.35).add(vec3(0.62, 0.70, 0.74)),
     uSplash.mul(0.85)
   );
+  // 血色恐怖模式:只做压暗和暗角;红色只来自血月与水面镜面反光。
+  const horrorVig = smoothstep(1.35, 0.18, length(screenUV.sub(0.5).mul(2.0)));
+  const horrorDark = withSplash.mul(vec3(0.34, 0.32, 0.35))
+    .mul(horrorVig.mul(0.50).add(0.50));
+  const horrorMixed = mix(withSplash, horrorDark, uHorror);
   // 求生虚脱:画面四周压暗(饥饿/口渴见底的体感)
   const vig = smoothstep(1.25, 0.35, length(screenUV.sub(0.5).mul(2.0)));
-  postProcessing.outputNode = withSplash.mul(
+  postProcessing.outputNode = horrorMixed.mul(
     mix(float(1.0), vig.mul(0.55).add(0.35), uSurvival));
 
   // --- 海洋雪:水下漂浮微粒,缓慢沉降 + 潮流摆动 ---
@@ -5835,19 +10402,44 @@ async function boot() {
   tornadoMesh.visible = false;
   scene.add(tornadoMesh);
 
-  const tornado = { active: false, t: 0, dir: 0, speed: 0, nextAuto: 25 };
+  const tornado = { active: false, t: 0, dir: 0, speed: 0, nextAuto: 25, retargetT: 0 };
+  function findTornadoTarget() {
+    const candidates = [];
+    for (const b of boats) candidates.push({ obj: b, kind: 'boat', x: b.x, z: b.z, radius: 170, scoreBias: 0 });
+    for (const g of activeTitans()) {
+      if (g.state === 'dead') continue;
+      const bodyR = titanBodyRadius(g);
+      candidates.push({
+        obj: g, kind: 'titan', x: g.x, z: g.z,
+        radius: Math.min(1800, 260 + bodyR * 1.35),
+        scoreBias: -bodyR * 0.85
+      });
+    }
+    if (!candidates.length) return null;
+    const cx = spoutState.x, cz = spoutState.z;
+    candidates.sort((a, b) => (Math.hypot(a.x - cx, a.z - cz) + a.scoreBias)
+      - (Math.hypot(b.x - cx, b.z - cz) + b.scoreBias));
+    return candidates[0];
+  }
   function triggerTornado() {
     if (tornado.active) return;
     tornado.active = true;
     tornado.t = 0;
+    const target = findTornadoTarget();
     const az = Math.random() * Math.PI * 2;
-    const R = 220 + Math.random() * 120;
-    spoutState.x = Math.cos(az) * R;
-    spoutState.z = Math.sin(az) * R;
+    const R = target ? 280 + Math.random() * 180 : 220 + Math.random() * 120;
+    spoutState.x = (target ? target.x : 0) + Math.cos(az) * R;
+    spoutState.z = (target ? target.z : 0) + Math.sin(az) * R;
+    spoutState.target = target ? target.obj : null;
+    spoutState.targetKind = target ? target.kind : '';
+    spoutState.radius = target ? target.radius : 170;
     tornado.dir = Math.random() * Math.PI * 2;
     tornado.speed = 4 + Math.random() * 3;
+    tornado.retargetT = 0;
     tornadoMesh.visible = true;
-    showToast('🌪 水龙卷来袭 · 开船远离漏斗!');
+    showToast(target && target.kind === 'titan'
+      ? '🌪 水龙卷锁定泰坦巨兽,漏斗随巨兽体型暴涨!'
+      : '🌪 水龙卷锁定船只 · 开船远离漏斗!');
   }
   function updateTornado(dt) {
     if (!tornado.active) {
@@ -5857,16 +10449,40 @@ async function boot() {
         tornado.nextAuto = 30 + Math.random() * 40;
       }
       spoutState.strength *= Math.max(0, 1 - dt * 1.5);
+      spoutState.target = null;
+      spoutState.targetKind = '';
       uTornado.value.set(spoutState.x, spoutState.z, spoutState.strength);
       tornadoMesh.visible = spoutState.strength > 0.01;
       return;
     }
     tornado.t += dt;
+    tornado.retargetT -= dt;
+    if (!spoutState.target || spoutState.target.state === 'gone' || tornado.retargetT <= 0) {
+      const target = findTornadoTarget();
+      spoutState.target = target ? target.obj : null;
+      spoutState.targetKind = target ? target.kind : '';
+      spoutState.radius = target ? target.radius : 170;
+      tornado.retargetT = 1.4;
+    }
+    const targetBodyR = spoutState.targetKind === 'titan' && spoutState.target
+      ? titanBodyRadius(spoutState.target) : 0;
     spoutState.strength = Math.min(1, tornado.t / 6) * (1 - sstep01(38, 48, tornado.t));
-    spoutState.x += Math.cos(tornado.dir) * tornado.speed * dt;
-    spoutState.z += Math.sin(tornado.dir) * tornado.speed * dt;
+    if (spoutState.target) {
+      const tx = spoutState.target.x, tz = spoutState.target.z;
+      const dx = tx - spoutState.x, dz = tz - spoutState.z;
+      const d = Math.hypot(dx, dz) || 1;
+      tornado.dir = Math.atan2(dz, dx);
+      const chase = spoutState.targetKind === 'titan' ? Math.min(120, 42 + targetBodyR * 0.08) : 24;
+      spoutState.x += dx / d * Math.min(d, chase * dt);
+      spoutState.z += dz / d * Math.min(d, chase * dt);
+    } else {
+      spoutState.x += Math.cos(tornado.dir) * tornado.speed * dt;
+      spoutState.z += Math.sin(tornado.dir) * tornado.speed * dt;
+    }
     uTornado.value.set(spoutState.x, spoutState.z, spoutState.strength);
     tornadoMesh.position.set(spoutState.x, 65, spoutState.z);
+    const s = spoutState.radius / 170;
+    tornadoMesh.scale.set(s, Math.max(s, 1), s);
     if (tornado.t >= 48) tornado.active = false;
   }
 
@@ -6113,8 +10729,8 @@ async function boot() {
   });
 
   /* ------------------- 巨型海啸事件 -------------------
-     时间线:0s 触发 → 6s 预警(远处海平线隆起)→ 波前以 ~26m/s 缓缓压来
-     → 前导回撤(海水先退)+ 45m 级主水墙 + 两级尾随波 → 105s 退场。
+     时间线:0s 触发 → 6s 预警(远处海平线隆起)→ 波前以 ~55m/s 横跨整片海域
+     → 前导回撤(海水先退)+ 数百米级主水墙 + 两级尾随波 → 155s 退场。
      高海况(≥0.6)下每 5~9 分钟也可能自动来袭。 */
   let tsunami = null;            // { t } 事件时钟
   let nextAutoTsunami = 320 + Math.random() * 220;
@@ -6140,14 +10756,14 @@ async function boot() {
     }
     tsunami.t += dt;
     const tau = tsunami.t;
-    const front = -1200 + 22 * Math.max(0, tau - 6);       // 波前推进(慢,才有压顶感)
-    const H0 = 45 + 35 * seaStateEff;                      // 满海况 80m 包络,浪管峰顶 ~100m
-    const grow = sstep01(2, 14, tau);                      // 振幅包络:渐强
-    const fade = 1 - sstep01(100, 125, tau);               // 扫过后渐弱
+    const front = -12500 + 120 * Math.max(0, tau - 8);     // 波前推进:横扫 24km 级整片海域
+    const H0 = 900 + 1100 * seaStateEff;                   // 满海况约 2km 包络,比普通风浪高数个量级
+    const grow = sstep01(2, 24, tau);                      // 振幅包络:渐强
+    const fade = 1 - sstep01(215, 245, tau);               // 扫过后渐弱
     tsunamiState.front = front;
     tsunamiState.amp = H0 * grow * fade;
     uTsunami.value.set(front, tsunamiState.amp);
-    if (tau >= 130) {
+    if (tau >= 250) {
       tsunami = null;
       tsunamiState.front = -10000;
       tsunamiState.amp = 0;
@@ -6166,6 +10782,20 @@ async function boot() {
   });
   $('btn-tsunami').addEventListener('click', () => triggerTsunami());
   $('btn-spout').addEventListener('click', () => triggerTornado());
+  $('btn-horror').addEventListener('click', () => {
+    const btn = $('btn-horror');
+    const on = !btn.classList.contains('active');
+    btn.classList.toggle('active', on);
+    uHorror.value = on ? 1 : 0;
+    if (on) {
+      timeOfDay = 22.5;
+      dayCycle = false;
+      updateSun();
+      syncTodUI();
+      $('btn-cycle').classList.remove('active');
+    }
+    showToast(on ? '🩸 血色恐怖风格已开启' : '血色恐怖风格已关闭');
+  });
   $('btn-drive').addEventListener('click', () => toggleDrive(playerBoat));
   $('btn-speed').addEventListener('click', () => toggleDrive(speedBoat));
   $('btn-sub').addEventListener('click', () => setPilotSub(!pilotSub));
@@ -6199,73 +10829,16 @@ async function boot() {
     else document.documentElement.requestFullscreen();
   });
   const setUiHidden = (hide) => document.body.classList.toggle('ui-hidden', hide);
-  const startScreen = $('start-screen');
-  const playerNameInput = $('player-name');
-  const roomCodeInput = $('room-code');
-  let autoJoinStarted = false;
-  const normalizeRoom = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 12);
-  const setStartStatus = (message, isError = false) => {
-    const el = $('start-status');
-    el.textContent = message || '';
-    el.classList.toggle('error', isError);
-  };
-  const rememberedName = (() => {
-    try { return sessionStorage.getItem('ocean-player-name') || ''; } catch (_) { return ''; }
-  })();
-  playerNameInput.value = rememberedName || ('海上旅人' + String(Math.floor(Math.random() * 90 + 10)));
-  roomCodeInput.value = normalizeRoom(mpRoom || '');
-  const rememberName = () => {
-    const name = (playerNameInput.value || '海上旅人').trim().slice(0, 16);
-    playerNameInput.value = name;
-    try { sessionStorage.setItem('ocean-player-name', name); } catch (_) { /* private mode */ }
-    return name;
-  };
-  const reloadForRoom = (code) => {
-    rememberName();
-    const u = new URL(location.href);
-    u.searchParams.set('room', code);
-    u.searchParams.set('mode', 'multi');
-    u.searchParams.set('autojoin', '1');
-    location.href = u.toString();
-  };
-  const startSelectedRoom = async () => {
-    const code = normalizeRoom(roomCodeInput.value);
-    if (!code) { setStartStatus('请输入房间号。', true); roomCodeInput.focus(); return; }
-    roomCodeInput.value = code;
-    const name = rememberName();
-    if (normalizeRoom(mpRoom) !== code) { reloadForRoom(code); return; }
-    if (autoJoinStarted) return;
-    autoJoinStarted = true;
-    setStartStatus('正在连接房间 ' + code + '…');
-    try {
-      const info = await connectRoom(code, name);
-      setStartStatus(info.host ? '房间已创建，正在等待好友加入…' : '连接成功，正在进入海域…');
+  const joinRoom = () => {
+    const code = window.prompt('输入房间号 —— 好友输入同一个号,就会和你出现在同一片海域与荒岛:', '');
+    if (code && code.trim()) {
       const u = new URL(location.href);
-      u.searchParams.delete('autojoin');
-      history.replaceState(null, '', u);
-      setTimeout(() => startScreen.classList.remove('show'), info.host ? 650 : 350);
-    } catch (err) {
-      autoJoinStarted = false;
-      setStartStatus((err && err.message) || '多人连接失败，请稍后重试。', true);
+      u.searchParams.set('room', code.trim());
+      location.href = u.toString();
     }
   };
-  $('start-single').addEventListener('click', () => {
-    startScreen.classList.remove('show');
-    setStartStatus('');
-  });
-  $('create-room').addEventListener('click', () => {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    roomCodeInput.value = code;
-    reloadForRoom(code);
-  });
-  $('join-room').addEventListener('click', startSelectedRoom);
-  roomCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startSelectedRoom(); });
-  const openRoomMenu = () => {
-    startScreen.classList.add('show');
-    roomCodeInput.focus();
-  };
-  $('btn-mp').addEventListener('click', openRoomMenu);
-  if ($('btn-room')) $('btn-room').addEventListener('click', openRoomMenu);
+  $('btn-mp').addEventListener('click', joinRoom);
+  if ($('btn-room')) $('btn-room').addEventListener('click', joinRoom);
   $('btn-hide').addEventListener('click', () => setUiHidden(true));
   $('ui-show').addEventListener('click', () => setUiHidden(false));
   window.addEventListener('keydown', (e) => {
@@ -6289,7 +10862,11 @@ async function boot() {
 
   // --- 着色器预编译 ---
   $('loading-status').textContent = '正在编译海洋与天空着色器';
-  try { await renderer.compileAsync(scene, camera); } catch (_) { /* 首帧编译兜底 */ }
+  try {
+    await renderer.compileAsync(scene, camera);
+  } catch (err) {
+    console.warn('WebGPU shader precompile failed; continuing with first-frame compilation.', err);
+  }
 
   // --- 主循环 ---
   const clock = new THREE.Clock();
@@ -6341,6 +10918,26 @@ async function boot() {
     uMeteorPos.value.copy(p);
     uMeteorTail.value.copy(meteor.vel).normalize().multiplyScalar(-0.045);
     uMeteorLife.value = Math.pow(Math.sin(Math.PI * k), 0.7);
+  }
+
+  const bloodEyeDir = new THREE.Vector3();
+  function updateBloodEyeTarget() {
+    camera.getWorldDirection(bloodEyeDir);
+    const seaFloorY = -26;
+    let t = 75;
+    if (bloodEyeDir.y < -0.04) {
+      t = THREE.MathUtils.clamp((seaFloorY - camera.position.y) / bloodEyeDir.y, 24, 220);
+    }
+    const hx = bloodEyeDir.x;
+    const hz = bloodEyeDir.z;
+    const hLen = Math.hypot(hx, hz) || 1;
+    const c = hx / hLen;
+    const s = hz / hLen;
+    uBloodEye.value.set(
+      camera.position.x + bloodEyeDir.x * t,
+      camera.position.z + bloodEyeDir.z * t,
+      c, s
+    );
   }
 
   function tick() {
@@ -6401,6 +10998,7 @@ async function boot() {
     if (driving) updateChaseCamera(dt);
     if (pilotSub) updateSubCamera(dt);
     updateNavMarker();
+    updateMinimap();
 
     // 海啸氛围组:预警条 + 镜头震颤 + 低频轰鸣 + 白沫冲击
     const camD = camera.position.x * 0.940 + camera.position.z * 0.342 - tsunamiState.front;
@@ -6411,8 +11009,8 @@ async function boot() {
       if (tsunamiState.front < -60) {
         const dist = Math.round(-tsunamiState.front);
         $('tsunami-warn-text').textContent =
-          '海啸逼近 · 波前 ' + dist + ' m · 约 ' + Math.max(1, Math.round(dist / 22)) + ' s 后到达';
-      } else if (tsunamiState.front < 500) {
+          '海啸逼近 · 波前 ' + dist + ' m · 约 ' + Math.max(1, Math.round(dist / 120)) + ' s 后到达';
+      } else if (tsunamiState.front < 12500) {
         $('tsunami-warn-text').textContent = '⚠ 海啸过境 · 抓稳了';
       } else {
         $('tsunami-warn-text').textContent = '余波未平 · 海况逐渐恢复中';
@@ -6444,6 +11042,7 @@ async function boot() {
         camera.position.z += Math.cos(simTime * 35.7) * prox2;
       }
     }
+    updateBloodEyeTarget();
 
     // --- 生态更新与物种现身条件 ---
     const isDay = elev > -0.02;
@@ -6466,6 +11065,7 @@ async function boot() {
     }
     updateWhale(simTime, nightFjs, seaStateEff);
     updateMeteor();
+    updateTornado(dt);
     updateBoats(simTime, dt);
     updateSub(simTime, dt);
     updateSurvival(simTime, dt);
@@ -6475,9 +11075,9 @@ async function boot() {
     updateFishing(simTime, dt);
     updateGiant(simTime, dt);
     updateSavages(simTime, dt);
+    updateToxicAnimals(simTime, dt);
     updateBombs(simTime, dt);
     updateMultiplayer(dt);
-    updateTornado(dt);
     spawnWakes(dt);
     const duskFjs = Math.max(0, 1 - sstep01(0.0, 0.30, elev) - nightFjs);
     updateOrcas(simTime, duskFjs, seaStateEff);
@@ -6510,20 +11110,11 @@ async function boot() {
       ready = true;
       window.__oceanReady = true;
       $('loading').classList.add('hidden');
-      startScreen.classList.add('show');
-      if (pageParams.get('mode') === 'multi' && pageParams.get('autojoin') === '1' && mpRoom) {
-        setTimeout(startSelectedRoom, 0);
-      }
     }
   }
 
-  // ---- 联机:房间号同步世界种子 + PeerJS 点对点位置互播 ----
-  // GitHub Pages 没有 /ws 或 /api 后端,所以这里由房主浏览器承担房间中继。
-  const mp = {
-    ws: null, id: 0, peers: new Map(), sendT: 0,
-    peer: null, host: false, room: '', nickname: '',
-    connections: new Map(), clientConn: null,
-  };
+  // ---- 联机:同房间号 → 同一片海域与荒岛(世界种子同步)+ 位置互播 ----
+  const mp = { ws: null, id: 0, peers: new Map(), sendT: 0 };
   const peerBoatGeo = createSpeedboatGeometry();
   const peerPersonGeo = (() => {
     const body = new THREE.CapsuleGeometry(0.17, 0.95, 4, 10);
@@ -6557,197 +11148,55 @@ async function boot() {
     return { id, group, person, boat, titan, mode: 'free', tx: 0, ty: 0, tz: 0, th: 0, cx: 0, cy: 0, cz: 0, ch: 0,
              tg: null, tgx: 0, tgy: 0, tgz: 0, tgh: 0 };
   }
-  function peerHash(value) {
-    let h = 2166136261 >>> 0;
-    for (const ch of String(value)) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
-    return h >>> 0;
-  }
-  function roomHostId(code) { return 'ocean-v4-' + peerHash(code).toString(36); }
-  function playerIdFromPeer(peerId) { return 2 + (peerHash(peerId) % 900000); }
-  function setPeerTransportOpen() {
-    mp.ws = {
-      readyState: 1,
-      send(payload) {
-        let message = payload;
-        if (typeof payload === 'string') {
-          try { message = JSON.parse(payload); } catch (_) { return; }
-        }
-        sendPeerMessage(message);
-      },
-    };
-  }
-  function removePeerVisual(id) {
-    const p = mp.peers.get(id);
-    if (!p) return;
-    scene.remove(p.group);
-    scene.remove(p.titan);
-    mp.peers.delete(id);
-  }
-  function handlePeerMessage(m) {
-    if (!m || typeof m !== 'object') return;
-    if (m.t === 'joined') {
-      mp.id = m.id;
-      showToast('🌐 已加入房间 ' + mp.room + '(在线 ' + m.count + ' 人)· 同一片海域,荒岛见!');
-    } else if (m.t === 'peer-join') {
-      if (m.id !== mp.id && !mp.peers.has(m.id)) mp.peers.set(m.id, makePeer(m.id));
-      showToast('👋 一位好友驶入了这片海域(在线 ' + m.count + ' 人)');
-    } else if (m.t === 'state') {
-      if (m.id === mp.id) return;
-      let p = mp.peers.get(m.id);
-      if (!p) { p = makePeer(m.id); mp.peers.set(m.id, p); }
-      p.mode = m.m; p.tx = m.x; p.ty = m.y; p.tz = m.z; p.th = m.h;
-      p.tg = m.g || null;
-    } else if (m.t === 'hit') {
-      damageWalker(m.dmg || 10, '被好友击毙');
-      showToast('💢 好友的' + (m.kind === 'bullet' ? '子弹' : '箭矢') + '命中了你!生命 -' + (m.dmg || 10));
-    } else if (m.t === 'thit') {
-      const tgt = myTamedTitan();
-      if (tgt) {
-        tgt.hp -= m.dmg || 5;
-        if (tgt.hp <= 0) {
-          killTitan(tgt);
-          showToast('☠ 你的' + tgt.sp.name + '被好友击杀,翻了肚皮……');
-        } else showToast('⚠ 你的' + tgt.sp.name + '遭到好友攻击!(生命 ' + Math.max(0, tgt.hp) + '/' + tgt.maxHp + ')');
-      }
-    } else if (m.t === 'peer-leave') {
-      removePeerVisual(m.id);
-      showToast('好友离开了海域');
-    }
-  }
-  function hostBroadcast(message, exceptPeer = '') {
-    for (const [peerId, record] of mp.connections) {
-      if (peerId !== exceptPeer && record.joined && record.conn.open) record.conn.send(message);
-    }
-  }
-  function routeHostMessage(sourceId, message, sourcePeer = '') {
-    if (message.t === 'state') {
-      const forwarded = { ...message, id: sourceId };
-      if (sourceId !== mp.id) handlePeerMessage(forwarded);
-      hostBroadcast(forwarded, sourcePeer);
+  function connectRoom(code) {
+    let ws;
+    try {
+      // 独立副本继续使用原游戏的联机房间服务，避免换域名后房间功能失效。
+      const wsUrl = new URL('wss://project-ws-fwt-lygwy7.apps.zaowuyun.com/ws');
+      ws = new WebSocket(wsUrl);
+    } catch {
+      showToast('联机服务器未连接 —— 静态分享链接只支持单人;点工作区「发布应用」正式发布后,房间号联机即可用');
       return;
     }
-    if (message.t === 'hit' || message.t === 'thit') {
-      if (message.target === mp.id) handlePeerMessage(message);
-      else {
-        for (const record of mp.connections.values()) {
-          if (record.id === message.target && record.joined && record.conn.open) {
-            record.conn.send(message);
-            break;
-          }
+    mp.ws = ws;
+    ws.onopen = () => ws.send(JSON.stringify({ t: 'join', room: code }));
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.t === 'joined') {
+        mp.id = m.id;
+        showToast('🌐 已加入房间 ' + code + '(在线 ' + m.count + ' 人)· 同一片海域,荒岛见!');
+      } else if (m.t === 'peer-join') {
+        if (!mp.peers.has(m.id)) mp.peers.set(m.id, makePeer(m.id));
+        showToast('👋 一位好友驶入了这片海域(在线 ' + m.count + ' 人)');
+      } else if (m.t === 'state') {
+        let p = mp.peers.get(m.id);
+        if (!p) { p = makePeer(m.id); mp.peers.set(m.id, p); }
+        p.mode = m.m; p.tx = m.x; p.ty = m.y; p.tz = m.z; p.th = m.h;
+        p.tg = m.g || null;                    // 好友驯服的泰坦位置(若有)
+      } else if (m.t === 'hit') {
+        // 被好友击中
+        if (m.poison || m.kind === 'poison-spear') applyPoison(10, 0, '被好友毒矛毒死了');
+        damageWalker(m.dmg || 10, '被好友击毙');
+        showToast('💢 好友的' + (m.kind === 'poison-spear' ? '毒矛' : m.kind === 'bullet' ? '子弹' : '箭矢') + '命中了你!生命 -' + (m.dmg || 10));
+      } else if (m.t === 'thit') {
+        // 好友攻击你的驯服泰坦
+        const tgt = myTamedTitan();
+        if (tgt) {
+          tgt.hp -= m.dmg || 5;
+          if (tgt.hp <= 0) {
+            killTitan(tgt);
+            showToast('☠ 你的' + tgt.sp.name + '被好友击杀,翻了肚皮……');
+          } else showToast('⚠ 你的' + tgt.sp.name + '遭到好友攻击!(生命 ' + Math.max(0, tgt.hp) + '/' + tgt.maxHp + ')');
         }
+      } else if (m.t === 'peer-leave') {
+        const p = mp.peers.get(m.id);
+        if (p) { scene.remove(p.group); scene.remove(p.titan); mp.peers.delete(m.id); }
+        showToast('好友离开了海域');
       }
-    }
-  }
-  function sendPeerMessage(message) {
-    if (mp.host) routeHostMessage(mp.id, message);
-    else if (mp.clientConn && mp.clientConn.open) mp.clientConn.send(message);
-  }
-  function acceptHostConnection(conn) {
-    const record = { conn, id: playerIdFromPeer(conn.peer), name: '海上旅人', joined: false };
-    mp.connections.set(conn.peer, record);
-    conn.on('data', (message) => {
-      if (!message || typeof message !== 'object') return;
-      if (message.t === 'join' && !record.joined) {
-        record.joined = true;
-        record.name = String(message.name || '海上旅人').slice(0, 16);
-        const joinedRecords = [...mp.connections.values()].filter((item) => item.joined);
-        const count = 1 + joinedRecords.length;
-        conn.send({ t: 'joined', id: record.id, count });
-        conn.send({ t: 'peer-join', id: mp.id, count });
-        for (const item of joinedRecords) {
-          if (item !== record) {
-            conn.send({ t: 'peer-join', id: item.id, count });
-            if (item.conn.open) item.conn.send({ t: 'peer-join', id: record.id, count });
-          }
-        }
-        showToast('👋 ' + record.name + ' 加入了房间(在线 ' + count + ' 人)');
-        return;
-      }
-      if (record.joined) routeHostMessage(record.id, message, conn.peer);
-    });
-    conn.on('close', () => {
-      if (!mp.connections.has(conn.peer)) return;
-      mp.connections.delete(conn.peer);
-      removePeerVisual(record.id);
-      const count = 1 + [...mp.connections.values()].filter((item) => item.joined).length;
-      hostBroadcast({ t: 'peer-leave', id: record.id, count });
-      showToast(record.name + ' 离开了海域');
-    });
-    conn.on('error', () => { /* close 事件统一清理 */ });
-  }
-  function peerOptions() {
-    return {
-      debug: 0,
-      config: { iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' },
-      ] },
     };
-  }
-  function connectRoom(code, nickname) {
-    if (mp.ws && mp.ws.readyState === 1) return Promise.resolve({ host: mp.host });
-    if (!window.Peer) return Promise.reject(new Error('多人组件未加载，请刷新页面后重试。'));
-    mp.room = normalizeRoom(code);
-    mp.nickname = nickname || '海上旅人';
-    const hostId = roomHostId(mp.room);
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finishError = (message) => {
-        if (settled) return;
-        settled = true;
-        reject(new Error(message));
-      };
-      const connectAsClient = () => {
-        const peer = new window.Peer(undefined, peerOptions());
-        mp.peer = peer;
-        const timeout = setTimeout(() => finishError('连接超时，请确认房主页面仍然在线。'), 16000);
-        peer.on('open', () => {
-          const conn = peer.connect(hostId, { reliable: true, metadata: { room: mp.room } });
-          mp.clientConn = conn;
-          conn.on('open', () => conn.send({ t: 'join', room: mp.room, name: mp.nickname }));
-          conn.on('data', (message) => {
-            handlePeerMessage(message);
-            if (message && message.t === 'joined' && !settled) {
-              settled = true;
-              clearTimeout(timeout);
-              setPeerTransportOpen();
-              resolve({ host: false });
-            }
-          });
-          conn.on('close', () => {
-            if (mp.ws) mp.ws.readyState = 3;
-            if (!settled) finishError('房间不存在或房主已经离开。');
-            else showToast('与房主的连接已断开');
-          });
-          conn.on('error', () => finishError('无法连接房间，请检查房间号和网络。'));
-        });
-        peer.on('error', (err) => {
-          if (!settled && err && err.type === 'peer-unavailable') finishError('房间不存在或房主尚未进入。');
-          else if (!settled) finishError('多人网络连接失败，请稍后重试。');
-        });
-      };
-      const candidate = new window.Peer(hostId, peerOptions());
-      mp.peer = candidate;
-      const hostTimeout = setTimeout(() => finishError('多人服务连接超时，请稍后重试。'), 16000);
-      candidate.on('open', () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(hostTimeout);
-        mp.host = true;
-        mp.id = 1;
-        setPeerTransportOpen();
-        showToast('🌐 已创建房间 ' + mp.room + ' · 把房间号发给好友');
-        resolve({ host: true });
-      });
-      candidate.on('connection', acceptHostConnection);
-      candidate.on('error', (err) => {
-        if (err && err.type === 'unavailable-id' && !settled) {
-          clearTimeout(hostTimeout);
-          try { candidate.destroy(); } catch (_) { /* ignore */ }
-          connectAsClient();
-        } else if (!settled) finishError('多人服务暂时不可用，请稍后重试。');
-      });
-    });
+    ws.onerror = () => showToast('联机服务器未连接 —— 静态分享链接只支持单人;点工作区「发布应用」正式发布后,房间号联机即可用');
+    ws.onclose = () => { if (mp.id) showToast('与联机服务器断开了'); };
   }
   function updateMultiplayer(dt) {
     // 远端玩家平滑跟随
@@ -6795,12 +11244,11 @@ async function boot() {
 
   if (restoreRandom) {
     restoreRandom();                   // 世界生成完毕,恢复真随机(钓鱼/AI 等)
+    connectRoom(mpRoom);
     document.title += ' · 房间 ' + mpRoom;
   }
 
-  window.addEventListener('beforeunload', () => {
-    try { if (mp.peer) mp.peer.destroy(); } catch (_) { /* ignore */ }
-  });
+  startIsland2TestIfNeeded();
 
   renderer.setAnimationLoop(tick);
 
@@ -6830,10 +11278,11 @@ export {
   createMotorboatGeometry, createSailboatGeometry, createOrcaGeometry, stepBoatDynamics, boatAttitude,
   createJiaolongGeometry, jiaolongColor, stepSubDynamics,
   ISLAND, BEACH_R, islandHeightAt, islandTerrainColor, createPalmGeometry, palmColor, palmSway,
-  createSpeedboatGeometry, createCanopyTreeGeometry, createCrabGeometry, createLizardGeometry,
+  createSpeedboatGeometry, createCanopyTreeGeometry, createButtressTreeGeometry, createBanyanTreeGeometry,
+  createTreeFernGeometry, createCrabGeometry, createLizardGeometry,
   createEgretGeometry, createDeerGeometry, createBoarGeometry, createBowGeometry,
   createAxeGeometry, createCrabPotGeometry, createFishingRodGeometry, createRifleGeometry,
-  createSniperGeometry, createSMGGeometry,
+  createSniperGeometry, createSMGGeometry, createSpearGeometry, createCatapultGeometry,
   deerColor, boarColor, createHandGeometry, handSkin,
   waveHeightAt, hashJS, stepChaos, chaosState, tsunamiState, sprayPosition, sprayOpacity,
   seafloorColor, bubblePosition, bubbleOpacity,

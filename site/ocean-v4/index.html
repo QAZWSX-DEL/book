@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>无尽之海 · Procedural Ocean</title>
+<title>无尽之海 · Procedural Ocean — WebGPU / TSL</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23071420'/%3E%3Cpath d='M3 20q4-5 8 0t8 0 8 0 5-2v11H3z' fill='%233aa7a3'/%3E%3Cpath d='M3 16q4-5 8 0t8 0 8 0 5-2v6H3z' fill='%235fd4d0'/%3E%3Ccircle cx='23' cy='9' r='3.4' fill='%23ffd9a0'/%3E%3C/svg%3E">
 <style>
   :root{
@@ -65,9 +65,9 @@
   }
   #error.show{ display:flex; }
   .error-card{
-    max-width:520px; width:100%; padding:34px 36px;
+    max-width:680px; width:100%; padding:34px 36px;
     border:1px solid rgba(255,120,110,.25); border-radius:14px;
-    background:rgba(20,10,10,.5);
+    background:rgba(20,10,10,.72);
   }
   .error-card h2{ font-size:14px; letter-spacing:.3em; color:#ff9d8f; margin-bottom:14px; font-weight:600; }
   .error-card p{ font-size:13px; line-height:1.9; color:var(--dim); word-break:break-all; }
@@ -76,53 +76,19 @@
     background:rgba(0,0,0,.4); color:#ffb4a8; font-size:11px; font-family:ui-monospace,Menlo,Consolas,monospace;
     white-space:pre-wrap; word-break:break-all;
   }
-
-  /* ---------- 加载后的开始 / 多人房间界面 ---------- */
-  #start-screen{
-    position:fixed; inset:0; z-index:35; padding:24px;
-    display:flex; align-items:center; justify-content:center;
-    background:radial-gradient(100% 100% at 50% 100%,rgba(10,46,62,.82),rgba(4,8,14,.88));
-    backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-    opacity:0; pointer-events:none; transition:opacity .45s ease;
+  .error-card .copy-hint{
+    margin-top:14px; font-size:12px; color:#fff0c2; letter-spacing:.04em;
   }
-  #start-screen.show{ opacity:1; pointer-events:auto; }
-  .start-card{
-    width:min(560px,100%); max-height:calc(100vh - 48px); overflow:auto;
-    padding:32px; border:1px solid rgba(95,212,208,.24); border-radius:22px;
-    background:linear-gradient(145deg,rgba(8,21,31,.94),rgba(6,13,21,.9));
-    box-shadow:0 28px 90px rgba(0,0,0,.5),inset 0 1px rgba(255,255,255,.04);
+  .error-card button{
+    margin-top:12px; margin-right:10px; padding:8px 12px; border-radius:999px;
+    border:1px solid rgba(255,180,168,.35); color:#fff3ef; background:rgba(255,120,110,.12);
+    font-size:12px; cursor:pointer;
   }
-  .start-kicker{ font-size:10px; letter-spacing:.38em; color:var(--teal); text-transform:uppercase; }
-  .start-card h2{ margin-top:10px; font-size:30px; letter-spacing:.18em; font-weight:600; }
-  .start-lead{ margin-top:8px; font-size:12px; line-height:1.7; color:var(--dim); }
-  .start-primary,.multi-action{
-    width:100%; border:0; border-radius:12px; cursor:pointer; font-family:inherit;
-    color:#061115; background:linear-gradient(135deg,#8ce7e1,#4fc5c1);
-    box-shadow:0 10px 28px rgba(79,197,193,.18); transition:transform .2s,filter .2s;
+  .error-card a{
+    display:inline-flex; margin-top:14px; padding:8px 12px; border-radius:999px;
+    border:1px solid rgba(95,212,208,.35); color:#c8fffb; text-decoration:none;
+    background:rgba(95,212,208,.08); font-size:12px; letter-spacing:.08em;
   }
-  .start-primary{ margin-top:24px; padding:14px 18px; font-size:14px; font-weight:700; letter-spacing:.2em; }
-  .start-primary:hover,.multi-action:hover{ transform:translateY(-1px); filter:brightness(1.08); }
-  .start-divider{ display:flex; align-items:center; gap:12px; margin:24px 0 16px; color:rgba(234,244,248,.35); font-size:9px; letter-spacing:.25em; }
-  .start-divider::before,.start-divider::after{ content:""; flex:1; height:1px; background:var(--line); }
-  .multi-card{ padding:18px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,.025); }
-  .multi-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
-  .multi-head strong{ display:block; font-size:14px; letter-spacing:.15em; }
-  .multi-head span{ display:block; margin-top:5px; font-size:10px; line-height:1.6; color:var(--dim); }
-  .multi-badge{ flex:none; padding:5px 8px; border:1px solid rgba(95,212,208,.28); border-radius:999px; color:#8fe8e3!important; letter-spacing:.12em; }
-  .multi-fields{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
-  .multi-field{ display:flex; flex-direction:column; gap:6px; }
-  .multi-field label{ font-size:9px; letter-spacing:.22em; color:var(--dim); }
-  .multi-field input{
-    width:100%; min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:10px;
-    outline:none; background:rgba(0,0,0,.22); color:var(--ink); font:12px ui-monospace,Menlo,monospace;
-  }
-  .multi-field input:focus{ border-color:rgba(95,212,208,.65); box-shadow:0 0 0 3px rgba(95,212,208,.08); }
-  .multi-actions{ display:grid; grid-template-columns:.8fr 1.2fr; gap:10px; margin-top:12px; }
-  .multi-action{ padding:11px 12px; font-size:11px; font-weight:700; letter-spacing:.12em; }
-  .multi-action.secondary{ color:var(--ink); border:1px solid var(--line); background:rgba(255,255,255,.055); box-shadow:none; }
-  #start-status{ min-height:18px; margin-top:12px; font-size:10px; line-height:1.7; color:#8fe8e3; }
-  #start-status.error{ color:#ff9d8f; }
-  .multi-note{ margin-top:8px; font-size:9px; line-height:1.6; color:rgba(234,244,248,.34); }
 
   /* ---------- HUD ---------- */
   #hud{
@@ -214,7 +180,7 @@
   #dpr-note{ font-size:9px; color:rgba(234,244,248,.3); letter-spacing:.12em; }
 
   /* ---------- 隐藏界面模式 ---------- */
-  body.ui-hidden #hud, body.ui-hidden #panel{ opacity:0; pointer-events:none; }
+  body.ui-hidden #hud, body.ui-hidden #panel, body.ui-hidden #minimap{ opacity:0; pointer-events:none; }
   body.ui-hidden #panel{ transform:translateY(12px); }
   #ui-show{
     position:fixed; z-index:11; top:max(18px,env(safe-area-inset-top)); right:20px;
@@ -225,6 +191,29 @@
   }
   #ui-show:hover{ color:var(--ink); border-color:rgba(95,212,208,.6); }
   body.ui-hidden #ui-show{ opacity:.8; pointer-events:auto; }
+
+  /* ---------- 海洋小地图 ---------- */
+  #minimap{
+    position:fixed; z-index:9; top:max(72px,calc(env(safe-area-inset-top) + 72px)); right:20px;
+    width:178px; padding:9px 10px 10px;
+    border:1px solid rgba(130,220,230,.22); border-radius:10px;
+    background:rgba(5,14,21,.54); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    box-shadow:0 14px 42px rgba(0,0,0,.34);
+    pointer-events:none; user-select:none; transition:opacity .25s ease;
+  }
+  #minimap .mm-head{
+    display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;
+    font-size:9px; letter-spacing:.24em; color:rgba(220,250,252,.68); text-transform:uppercase;
+  }
+  #minimap .mm-scale{
+    font-family:ui-monospace,Menlo,Consolas,monospace; letter-spacing:.06em; color:#8fe8e3;
+  }
+  #minimap-canvas{ display:block; width:156px; height:156px; border-radius:6px; }
+  #minimap .mm-legend{
+    display:flex; justify-content:space-between; gap:6px; margin-top:6px;
+    font-size:8px; letter-spacing:.08em; color:rgba(234,244,248,.46);
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
 
   /* ---------- 生物图鉴 ---------- */
   #dex{
@@ -343,8 +332,8 @@
   }
   /* 岛上键位总表 */
   #keys-help{
-    position:fixed; z-index:12; right:20px; top:70px;
-    width:min(400px,calc(100vw - 40px));
+    position:fixed; z-index:12; right:20px; top:22px;
+    width:min(430px,calc(100vw - 40px)); max-height:calc(100vh - 44px); overflow-y:auto;
     padding:14px 16px 12px;
     background:var(--glass); border:1px solid var(--line); border-radius:14px;
     backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
@@ -358,18 +347,41 @@
   #keys-help .cols > div{ flex:1; }
   #keys-help p{ font-size:10.5px; line-height:1.85; color:var(--dim); letter-spacing:.04em; }
   #keys-help b{ color:#8fe8e3; font-weight:600; font-family:ui-monospace,Menlo,monospace; }
+  #keys-help .second-only{ display:none; }
+  #keys-help.show-second .second-only{ display:block; }
+  /* 彩蛋图鉴(L 键) */
+  #eggs-panel{
+    position:fixed; z-index:12; left:50%; top:50%;
+    transform:translate(-50%,-46%);
+    width:min(430px,calc(100vw - 40px));
+    padding:16px 20px 13px;
+    background:var(--glass); border:1px solid var(--line); border-radius:14px;
+    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+    box-shadow:0 12px 40px rgba(0,0,0,.45);
+    opacity:0; pointer-events:none;
+    transition:opacity .35s ease, transform .35s ease;
+  }
+  #eggs-panel.show{ opacity:1; transform:translate(-50%,-50%); pointer-events:auto; }
+  #eggs-panel h3{ font-size:11px; letter-spacing:.28em; margin-bottom:9px; color:var(--ink); }
+  #eggs-panel p{ font-size:10.5px; line-height:1.9; color:var(--dim); letter-spacing:.04em; }
+  #eggs-panel b{ color:#ffd76a; font-weight:600; }
+  #eggs-panel .egg{ cursor:pointer; border-radius:6px; padding:1px 6px; margin:0 -6px; transition:background .2s; }
+  #eggs-panel .egg:hover{ background:rgba(95,212,208,.10); color:var(--ink); }
   /* 狙击枪「灵眼」瞄准镜:全屏圆形视野遮罩 */
   #scope-mask{
     position:fixed; inset:0; z-index:14; pointer-events:none; display:none;
-    background:radial-gradient(circle at 50% 50%, transparent 26vmin, rgba(2,6,8,.97) 27vmin);
+    background:
+      radial-gradient(circle at 50% 50%, transparent 0 33vmin, rgba(95,212,208,.20) 33.2vmin, transparent 33.6vmin),
+      radial-gradient(circle at 50% 50%, transparent 0 58vmin, rgba(2,6,8,.18) 78vmin);
   }
   #scope-mask.show{ display:block; }
-  #scope-mask .cross-h, #scope-mask .cross-v{ position:absolute; left:50%; top:50%; background:rgba(180,240,235,.75); }
-  #scope-mask .cross-h{ width:44vmin; height:1px; transform:translate(-50%,-0.5px); }
-  #scope-mask .cross-v{ width:1px; height:44vmin; transform:translate(-0.5px,-50%); }
+  #scope-mask .cross-h, #scope-mask .cross-v{ position:absolute; left:50%; top:50%; background:rgba(160,245,235,.62); box-shadow:0 0 8px rgba(95,212,208,.18); }
+  #scope-mask .cross-h{ width:24vmin; height:1px; transform:translate(-50%,-0.5px); }
+  #scope-mask .cross-v{ width:1px; height:24vmin; transform:translate(-0.5px,-50%); }
   #scope-mask .zoom-tag{
-    position:absolute; left:50%; top:calc(50% + 20vmin); transform:translateX(-50%);
-    font:11px ui-monospace,Menlo,monospace; color:#8fe8e3; letter-spacing:.2em;
+    position:absolute; left:50%; top:calc(50% + 24vmin); transform:translateX(-50%);
+    padding:3px 7px; border-radius:999px; background:rgba(2,8,10,.32);
+    font:11px ui-monospace,Menlo,monospace; color:#8fe8e3; letter-spacing:.16em;
   }
   /* 无框瞄具(冲锋枪/步枪):中心红点 */
   #reddot{
@@ -378,6 +390,12 @@
     background:#ff4a3d; box-shadow:0 0 6px 2px rgba(255,60,40,.65);
   }
   #reddot.show{ display:block; }
+  #poison-veil{
+    position:fixed; inset:-18px; z-index:13; pointer-events:none; opacity:0;
+    backdrop-filter:blur(7px) saturate(.8); -webkit-backdrop-filter:blur(7px) saturate(.8);
+    background:radial-gradient(circle at 50% 48%, rgba(55,130,70,.08), rgba(20,60,28,.35));
+    transition:opacity .18s linear;
+  }
   #island-hud .bar i{
     display:block; height:100%; width:100%; border-radius:3px;
     background:linear-gradient(90deg,#5ad19b,#8fe8e3);
@@ -395,6 +413,21 @@
     opacity:0; pointer-events:none; transition:opacity .3s;
   }
   #xhair.show{ opacity:1; }
+  #xhair.hide{ opacity:0; }
+  #turret-cross{
+    position:fixed; left:50%; top:50%; z-index:15; width:54px; height:54px;
+    transform:translate(-50%,-50%); pointer-events:none; display:none;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.85));
+  }
+  #turret-cross.show{ display:block; }
+  #turret-cross::before{
+    content:""; position:absolute; inset:0;
+    background:
+      linear-gradient(rgba(218,255,248,.92),rgba(218,255,248,.92)) left 50% top 50% / 20px 1.5px no-repeat,
+      linear-gradient(rgba(218,255,248,.92),rgba(218,255,248,.92)) right 50% top 50% / 20px 1.5px no-repeat,
+      linear-gradient(rgba(218,255,248,.92),rgba(218,255,248,.92)) left 50% top 0 / 1.5px 20px no-repeat,
+      linear-gradient(rgba(218,255,248,.92),rgba(218,255,248,.92)) left 50% bottom 0 / 1.5px 20px no-repeat;
+  }
 
   /* ---------- 荒岛导航标记 ---------- */
   #nav-svg{
@@ -423,10 +456,8 @@
     #hud h1{ font-size:14px; letter-spacing:.38em; }
     #hud .hint{ display:none; }
     #panel{ left:18px; padding:14px 16px 12px; max-height:52vh; }
-    #start-screen{ padding:14px; }
-    .start-card{ padding:24px 20px; }
-    .start-card h2{ font-size:24px; }
-    .multi-fields,.multi-actions{ grid-template-columns:1fr; }
+    #minimap{ right:12px; top:max(58px,calc(env(safe-area-inset-top) + 58px)); width:142px; padding:7px; }
+    #minimap-canvas{ width:128px; height:128px; }
   }
 </style>
 </head>
@@ -439,50 +470,26 @@
   <div class="loader-mark"></div>
   <div class="loader-title">无尽之海</div>
   <div class="loader-bar"></div>
-  <div class="loader-sub" id="loading-status">正在初始化图形渲染器</div>
+  <div class="loader-sub" id="loading-status">正在初始化 WebGPU</div>
 </div>
 
 <!-- 错误界面 -->
 <div id="error">
   <div class="error-card">
     <h2>无法启动渲染器</h2>
-    <p id="error-msg">当前环境无法启动 WebGPU 或 WebGL2。请使用最新版 Chrome、Edge、Safari 或 Firefox，并确认已启用硬件加速。</p>
+    <p id="error-msg">当前环境不支持 WebGPU。请使用 Chrome / Edge 113+、Safari 26+ 或最新版 Firefox,并确认已启用硬件加速。Safari 17/18 可在 开发 → 实验性功能 中开启 WebGPU。</p>
+    <div class="copy-hint">把下面红色代码框里的文字发给我：</div>
     <code id="error-detail"></code>
-  </div>
-</div>
-
-<!-- 加载完成后进入游戏；多人房间沿用仿三角洲的“昵称 + 房间号”流程 -->
-<div id="start-screen" aria-modal="true" role="dialog" aria-labelledby="start-title">
-  <div class="start-card">
-    <div class="start-kicker">PROCEDURAL OCEAN</div>
-    <h2 id="start-title">无尽之海</h2>
-    <p class="start-lead">驾驶船只穿越风暴、潜入深海，或登上荒岛开始求生。</p>
-    <button class="start-primary" id="start-single" type="button">进入游戏</button>
-    <div class="start-divider">多人游戏</div>
-    <section class="multi-card">
-      <div class="multi-head">
-        <div><strong>好友房间</strong><span>输入相同房间号，共享同一片海域与荒岛。</span></div>
-        <span class="multi-badge">P2P 联机</span>
-      </div>
-      <div class="multi-fields">
-        <div class="multi-field"><label for="player-name">玩家昵称</label><input id="player-name" maxlength="16" autocomplete="nickname" placeholder="海上旅人"></div>
-        <div class="multi-field"><label for="room-code">房间号</label><input id="room-code" maxlength="12" inputmode="text" autocomplete="off" placeholder="例如 888888"></div>
-      </div>
-      <div class="multi-actions">
-        <button class="multi-action secondary" id="create-room" type="button">创建房间</button>
-        <button class="multi-action" id="join-room" type="button">进入多人海域</button>
-      </div>
-      <div id="start-status" aria-live="polite"></div>
-      <p class="multi-note">房主需要保持页面在线。数据通过浏览器点对点传输；不同网络首次连接可能需要数秒。</p>
-    </section>
+    <button id="copy-error" type="button">复制诊断信息</button>
+    <a href="./webgpu-check.html">打开 WebGPU 自检页</a>
   </div>
 </div>
 
 <!-- 标题 HUD -->
 <div id="hud">
   <h1>无尽之海</h1>
-  <div class="sub">Procedural Ocean · WebGPU / WebGL2 · TSL</div>
-  <div class="hint">移动鼠标转视角 · 滚轮缩放 · 触屏拖动 · 可潜入水下 · H 隐藏界面</div>
+  <div class="sub">Procedural Ocean · WebGPU · TSL</div>
+  <div class="hint">拖拽旋转 · 滚轮缩放 · 触屏双指 · 可潜入水下 · H 隐藏界面</div>
 </div>
 
 <!-- 控制面板 -->
@@ -515,11 +522,12 @@
     <button class="pill" id="btn-room" title="输入房间号,传送到好友所在的同一座岛屿(同一房间的玩家共享海域与荒岛)">房间</button>
     <button class="pill" id="btn-storm" title="风暴模式:闪电雷鸣、海况加剧、乌云压顶">风暴</button>
     <button class="pill" id="btn-spout" title="召唤水龙卷:拖拽并掀翻靠近的船只(风暴时也会自动生成)">水龙卷</button>
+    <button class="pill" id="btn-horror" title="切换阴森恐怖风格:猩红血色、轻微负片、高对比暗角">血色</button>
     <button class="pill" id="btn-full" title="进入 / 退出全屏">全屏</button>
     <button class="pill" id="btn-hide" title="隐藏全部界面(H 键恢复)">沉浸</button>
     <button class="pill" id="btn-shot" title="把当前画面保存为 PNG 图片">拍照</button>
     <button class="pill" id="btn-drive" title="登上红色摩托艇:W/S 油门、A/D 舵、B 下船">上船</button>
-    <button class="pill" id="btn-speed" title="登上超级快艇:51 节级,可开往远方荒岛;W/S 油门、A/D 舵、到浅滩按 V 下船登岛">快艇</button>
+    <button class="pill" id="btn-speed" title="登上超级快艇:51 节级;只能登陆旧岛,第二岛必须骑满足条件的泰坦前往">快艇</button>
     <button class="pill" id="btn-sub" title="进入蛟龙号载人潜水器:W/S 推进、A/D 转向、R/F 上浮下潜、C 悬停定深、X 抛弃压载、J 离舱">蛟龙</button>
     <button class="pill" id="btn-mp" title="输入房间号,和好友进入同一片海域与荒岛(需联机部署版)">联机</button>
   </div>
@@ -556,7 +564,14 @@
 
 <!-- 荒岛导航标记:图标 + 虚线连着船 + 剩余距离(岛在屏幕外时贴边指示方向) -->
 <svg id="nav-svg"><line id="nav-line" x1="0" y1="0" x2="0" y2="0"/></svg>
-<div id="nav-marker"><span id="nav-icon">🏝</span><span>荒岛</span><span id="nav-dist">0 m</span></div>
+<div id="nav-marker"><span id="nav-icon">🏝</span><span id="nav-label">荒岛</span><span id="nav-dist">0 m</span></div>
+
+<!-- 海洋小地图:右上角显示岛屿、载具、玩家/泰坦方位 -->
+<div id="minimap">
+  <div class="mm-head"><span>海域图</span><span class="mm-scale" id="mm-scale">24 km</span></div>
+  <canvas id="minimap-canvas" width="312" height="312"></canvas>
+  <div class="mm-legend"><span>●你</span><span>▲船</span><span>◆泰坦</span></div>
+</div>
 
 <!-- 驾驶 HUD(上船时显示) -->
 <div id="drive-hud">
@@ -586,23 +601,53 @@
   <div class="item"><span class="k">陷阱</span><span class="v" id="ih-traps">3</span></div>
   <div class="item"><span class="k">椰子</span><span class="v" id="ih-coconut">0</span></div>
   <div class="item"><span class="k">木柴</span><span class="v" id="ih-wood">0</span></div>
+  <div class="item"><span class="k">木材</span><span class="v" id="ih-timber">0</span></div>
+  <div class="item"><span class="k">绳子</span><span class="v" id="ih-rope">0</span></div>
   <div class="item"><span class="k">石块</span><span class="v" id="ih-stone">0</span></div>
   <div class="item"><span class="k">肉</span><span class="v" id="ih-meat">0</span></div>
   <div class="item"><span class="k">蟹笼</span><span class="v" id="ih-pots">1</span></div>
   <div class="item"><span class="k">神肉</span><span class="v" id="ih-godmeat">0</span></div>
   <div class="item" id="ih-weapon-item" style="display:none"><span class="k">武器</span><span class="v" id="ih-weapon">弓箭</span></div>
-  <div class="item" id="ih-bullets-item" style="display:none"><span class="k">子弹</span><span class="v" id="ih-bullets">0</span></div>
-  <div class="item" id="ih-bombs-item" style="display:none"><span class="k">磁爆弹</span><span class="v" id="ih-bombs">2</span></div>
+  <div class="item" id="ih-bullets-item" style="display:none"><span class="k">弹药</span><span class="v" id="ih-bullets">0</span></div>
+  <div class="item" id="ih-bombs-item" style="display:none"><span class="k">磁爆弹</span><span class="v" id="ih-bombs">5 快投</span></div>
   <div class="item" id="ih-buff" style="display:none"><span class="v" style="color:#ffd76a">⚡神力</span></div>
-  <span class="keys" id="ih-hint">WASD 移动 · 移动鼠标环顾 · E 互动 · G 吃椰子</span>
+  <div class="item" id="ih-godmode" style="display:none"><span class="v" style="color:#ffe083">👑 无敌之身</span></div>
+  <span class="keys" id="ih-hint">WASD 移动 · 1 跳跃/攀爬 · G 吃椰子 · U 磁吸炸弹</span>
+</div>
+
+<!-- 彩蛋图鉴(L 键弹出,五位密码解锁;点条目看距离) -->
+<div id="eggs-panel">
+  <h3>🥚 彩蛋图鉴 <span style="color:var(--dim);font-weight:400">(L 开关 · 点条目看距离)</span></h3>
+  <p class="egg" data-egg="lucky">🎣 <b>幸运密码</b> —— 传说有一串数字,能让每次收杆必中虚空泰坦(按 0 输入)</p>
+  <p class="egg" data-egg="whisper">📜 <b>古老密语</b> —— 河里的刺球 和 藤上的青瓜…… 知道的人按 M 低语</p>
+  <p class="egg" data-egg="altar">🗿 <b>古老祭坛</b>(新岛)—— 不要密码:祭拜得野人好感 · 回血</p>
+  <p class="egg" data-egg="stonealtar">🪨 <b>石牙信任祭坛</b>(新岛)—— 治疗 5 次后获得石牙村彻底信任</p>
+  <p class="egg" data-egg="mistaltar">🌫 <b>雾叶信任祭坛</b>(新岛)—— 治疗 5 次后获得雾叶村彻底信任</p>
+  <p class="egg" data-egg="totem">🗿 <b>图腾歌谣</b>(新岛)—— 「五山两河三树」指向鎏金宝箱的三位数</p>
+  <p class="egg" data-egg="chest">⚔️ <b>鎏金宝箱</b>(新岛)—— 沉船边的密码箱,前人宝藏</p>
+  <p class="egg" data-egg="memorial">🪦 <b>红五星墓碑</b>(新岛)—— 墓志铭里有一位锅炉工的年份,碑底暗格等你开</p>
+  <p class="egg" data-egg="wreck">⚓ <b>沉船残骸</b>(新岛)—— 船名指向墓碑纪念的那个人</p>
+  <p class="egg" data-egg="stonev">🪨 <b>石牙村</b>(新岛)—— 强攻派野人村落,帮助后通向第三岛结局</p>
+  <p class="egg" data-egg="mistv">🌫 <b>雾叶村</b>(新岛)—— 避战派野人村落,帮助后通向第四岛结局</p>
+  <p class="egg" data-egg="third">🏝 <b>石牙远岛</b> —— 石牙路线解锁的第三座岛</p>
+  <p class="egg" data-egg="fourth">🏝 <b>雾叶远岛</b> —— 雾叶路线解锁的第四座岛</p>
+  <p class="egg" data-egg="ultimate">👑 <b>终极虚空泰坦</b> —— 连吞 4 只同类而进化;多只认主时,最大的自动开吞</p>
+  <p class="egg" data-egg="shelter">🏚 <b>旧岛避难所</b> —— 红五星木箱 · 军火库密码 · 照片与枪架的年份</p>
+  <p class="egg" data-egg="tomb">🕳 <b>百发盗洞古墓</b> —— 任意武器连续射同一处地面 100 次,视角不能转动;找到后自制装备下墓</p>
+  <p class="egg" data-egg="tombskip">⛏️ <b>盗墓管理员密码</b> —— 作者测试用:按 8 输入「🕳️⛏️」可跳过盗墓材料/工具/盗洞直接进墓室</p>
+  <p class="egg" data-egg="bombadmin">🧲 <b>磁吸炸弹管理员密码</b> —— 作者测试用:按 6 输入「🧲💥」可获得无限无冷却磁吸炸弹</p>
+  <p class="egg" data-egg="historian">📜 <b>史官遗书</b> —— 暗河另一侧的竹简,记着石牙与雾叶野人的同源往事</p>
+  <p class="egg" data-egg="ocean">🌊 <b>万斤巨物</b> —— 它本身,就是这片海最大的彩蛋</p>
 </div>
 
 <!-- 第一人称准星(登岛时显示) -->
 <div id="xhair"></div>
+<div id="turret-cross"></div>
 
 <!-- 瞄准镜:狙击「灵眼 3-7x」圆形视野 / 冲锋枪·步枪红点 -->
 <div id="scope-mask"><div class="cross-h"></div><div class="cross-v"></div><div class="zoom-tag" id="scope-zoom">灵眼 4.0×</div></div>
 <div id="reddot"></div>
+<div id="poison-veil"></div>
 
 <!-- 岛上键位总表(登岛自动显示一遍,K 键随时开关) -->
 <div id="keys-help">
@@ -610,17 +655,47 @@
   <div class="cols">
     <div>
       <p><b>WASD</b> 移动 · <b>Shift</b> 疾跑/走路切换</p>
-      <p><b>移动鼠标</b> 环顾 · <b>空格</b> 射箭/射击</p>
-      <p><b>4</b> 开镜/关镜(狙击滚轮调 3-7×)</p>
-      <p><b>2</b> 换武器 · <b>E</b> 互动/驯服/吞噬</p>
-      <p><b>V</b> 骑乘泰坦(无视距离)/上下快艇</p>
-      <p><b>X</b> 砍柴 · <b>Q</b> 打磨箭矢 · <b>F</b> 设陷阱</p>
+      <p><b>拖动鼠标</b> 环顾 · <b>1</b> 跳跃/攀爬 · <b>E</b> 互动</p>
+      <p><b>采集</b> <b>G</b> 吃椰子 · <b>T</b> 吃肉 · <b>Y</b> 喝水 · <b>H</b> 钓鱼</p>
+      <p><b>工具</b> <b>X</b> 砍树/劈石/施工 · <b>Q</b> 打磨箭矢/涂毒 · <b>F</b> 设陷阱</p>
+      <p><b>建房 1</b> 海滩捡绳子,砍树得木材;找旧岛/雨林房基</p>
+      <p><b>建房 2</b> 备齐木材 50 + 绳子 10 后,房基旁按 <b>X</b> 施工 10 次</p>
+      <p><b>升级</b> 建好后继续在房旁按 <b>X</b>,消耗木材/绳子升级到雨林据点</p>
+      <p><b>房屋</b> 靠近自动庇护;按 <b>E</b> 休整,等级越高回血/补水/解毒越强</p>
+      <p><b>回城</b> 按住 <b>3</b> 五秒回到最近房子;受击/松手/移动会中断</p>
+      <p><b>工作台</b> 靠近按 <b>E</b> 打开,再按数字:1 步枪 · 2 狙击 · 3 冲锋 · 4/5/6 制弹</p>
+      <p><b>枪械材料</b> 步枪:木柴3/废铁3/机件1/火药2;狙击:木柴4/废铁5/机件3/火药4;冲锋:木柴5/废铁6/机件4/火药5</p>
+      <p><b>弹药材料</b> 步枪弹:铅2/铜壳2/火药1/引火帽1;狙击弹:铅3/铜壳2/火药2/引火帽2;冲锋弹:铅4/铜壳5/火药2/引火帽2</p>
+      <p><b>如何去往第二岛</b> 泰坦数量至少达到 3 只,或已有吞噬三只的泰坦,然后乘坐泰坦过去</p>
+      <p><b>盗墓材料</b> 铁锭6 + 灯油2 + 硬木柄2 + 绳子2 + 木材4;带到墓口按 <b>E</b> 制作装备</p>
+      <p><b>🕳 墓穴</b> 打开方式:「百声叩一土,目不转,风不移;地皮自裂,幽门自开。」</p>
+      <p><b>墓内</b> 青铜器/八卦阵/灵异符号暗示机关;掀开石棺后靠近墓藏按 <b>E</b> 一件件拿</p>
+      <p><b>作者测试</b> 按 <b>8</b> 输入表情密码,可直接跳过盗墓材料/工具/盗洞进入墓室</p>
+      <p><b>军火库</b> <b>P</b> 进入地下军火库;补枪械弹药,应对战争和长老</p>
+      <p><b>奇遇</b> 漂流瓶/潮池/三角蚌/风向标/求生石堆/信号火堆/藤蔓秋千可按 <b>E</b>;椰壳靶架按 <b>E</b> 开 12s 挑战,8-28 米外弓箭命中加分</p>
+      <p class="second-only"><b>第二岛后续</b> 想登第 3/第 4 岛,必须先在墓穴石棺里取得阴阳罗盘</p>
+      <p class="second-only"><b>第 3 岛判定</b> 持有阴阳罗盘后,骑泰坦靠近石崖岛边缘,到边上按 <b>V</b> 登岛</p>
+      <p class="second-only"><b>第 4 岛判定</b> 持有阴阳罗盘后,骑泰坦靠近物业/雾叶岛边缘,到边上按 <b>V</b> 登岛</p>
+      <p class="second-only"><b>没有罗盘</b> 泰坦就算贴到第 3/第 4 岛边缘,也找不到上岸潮线,按 <b>V</b> 上不去</p>
+      <p class="second-only"><b>远岛遗迹</b> 第 3/第 4 岛有古人智慧遗迹:日影金字塔、石算盘、水镜金字塔、星象石盘,靠近按 <b>E</b> 触发</p>
+      <p class="second-only"><b>第二岛</b> 迷雾雨林、河流、两座野人村、废弃长城和烽火台都在本岛</p>
+      <p class="second-only"><b>烽火台</b> 长城制高点附近按 <b>1</b> 跳跃/攀爬,靠近炮位按 <b>E</b> 上炮台</p>
+      <p class="second-only"><b>长剑炮台</b> 操控时长按 <b>空格</b> 连射 · <b>4</b> 腰射/7×镜 · <b>E</b> 离开</p>
     </div>
     <div>
-      <p><b>H</b> 钓鱼 · <b>C</b> 放/收蟹笼 · <b>Y</b> 喝水</p>
-      <p><b>T</b> 吃肉 · <b>G</b> 吃椰子/新岛磁吸炸弹</p>
-      <p><b>R</b> 吃神肉 · <b>P</b> 军火库 · <b>B</b> 摩托艇</p>
-      <p><b>J</b> 蛟龙号 · <b>H(海上)</b> 隐藏界面</p>
+      <p class="second-only"><b>野人</b> 选择重生为野人后有职业:剑士/长矛/盾兵/炼毒师</p>
+      <p class="second-only"><b>阵营</b> 石牙/雾叶二选一;村落只有野人能进,信任路线不同</p>
+      <p class="second-only"><b>祭坛</b> 濒危或正常状态都可治疗;累计治疗可获得阵营信任</p>
+      <p class="second-only"><b>战争</b> 外来者上岸 30 秒后可能触发总攻/游击;野人会靠近围攻,长老后期登场</p>
+      <p class="second-only"><b>毒矛</b> 野人用长矛处理毒物提毒液,再按 <b>Q</b> 制作毒矛</p>
+      <p class="second-only"><b>投石机</b> 野人村落智慧武器;海边大礁石按 <b>N</b> 切割巨石弹</p>
+      <p class="second-only"><b>搬运</b> 投石机可放地上当炮台;搬运时只能走路,吃神肉后可疾跑</p>
+      <p><b>武器</b> <b>2</b> 换武器 · <b>空格</b> 射击/投矛/发射投石机</p>
+      <p><b>特殊</b> <b>U</b> 磁吸炸弹;初始 5 颗,用完后每冷却 30s 自动补 1 颗</p>
+      <p><b>泰坦</b> <b>V</b> 骑乘;骑乘时 <b>空格</b> 尾击 · <b>F</b> 撕咬回血 · <b>X</b> 震地</p>
+      <p><b>载具</b> <b>B</b> 摩托艇 · <b>V</b> 超级快艇/上下岸 · <b>J</b> 蛟龙号</p>
+      <p><b>无敌</b> 按 <b>Tab</b> 输入密码,开启后任何攻击、毒伤和机关都无法伤害你</p>
+      <p><b>面板</b> <b>K</b> 键位表 · <b>L</b> 彩蛋图鉴(有锁,不显示密码)</p>
     </div>
   </div>
 </div>
@@ -633,9 +708,20 @@
   window.__oceanError = function (msg, detail) {
     var el = document.getElementById('error');
     var ld = document.getElementById('loading');
+    var extra = [];
     if (ld) ld.classList.add('hidden');
     if (msg) document.getElementById('error-msg').textContent = msg;
-    if (detail) document.getElementById('error-detail').textContent = String(detail);
+    try {
+      extra.push('UA: ' + navigator.userAgent);
+      extra.push('navigator.gpu: ' + (navigator.gpu ? 'yes' : 'no'));
+      var canvas = document.getElementById('scene');
+      var canWebGPU = false;
+      if (canvas && canvas.getContext) {
+        try { canWebGPU = !!canvas.getContext('webgpu'); } catch (_) { canWebGPU = false; }
+      }
+      extra.push("canvas.getContext('webgpu'): " + (canWebGPU ? 'yes' : 'no'));
+    } catch (_) {}
+    document.getElementById('error-detail').textContent = [detail ? String(detail) : '', extra.join('\n')].filter(Boolean).join('\n\n');
     el.classList.add('show');
   };
   window.addEventListener('error', function (e) {
@@ -644,20 +730,30 @@
   window.addEventListener('unhandledrejection', function (e) {
     if (!window.__oceanReady) window.__oceanError('初始化过程中发生错误。', (e.reason && e.reason.message) || e.reason || 'unknown');
   });
+  window.addEventListener('DOMContentLoaded', function () {
+    var btn = document.getElementById('copy-error');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var text = document.getElementById('error-detail').textContent || document.getElementById('error-msg').textContent || '';
+      if (navigator.clipboard && text) navigator.clipboard.writeText(text);
+      btn.textContent = '已复制';
+    });
+  });
 </script>
-
-<script src="./peerjs.min.js"></script>
 
 <script type="importmap">
 {
   "imports": {
     "three": "./three.core.js",
     "three/webgpu": "./three.webgpu.js",
-    "three/tsl": "./three.tsl.js"
+    "three/tsl": "./three.tsl.js",
+    "three/addons/controls/OrbitControls.js": "./OrbitControls.js",
+    "three/addons/tsl/display/BloomNode.js": "./BloomNode.js",
+    "three/addons/utils/BufferGeometryUtils.js": "./BufferGeometryUtils.js"
   }
 }
 </script>
-<script type="module" src="./main.js?v=20260820m"></script>
+<script type="module" src="./main.js?v=20261101-godmode"></script>
 
 </body>
 </html>
